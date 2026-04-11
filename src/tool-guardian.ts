@@ -2,7 +2,7 @@ import type { HookInput, HookJSONOutput, HookCallback } from "@anthropic-ai/clau
 import { createLogger } from "./logging/logger.js";
 import type { ServerMessage } from "./types.js";
 
-const log = createLogger("beekeeper-guardian");
+const log = createLogger("relay-tool-guardian");
 
 interface PendingApproval {
   resolve: (decision: HookJSONOutput) => void;

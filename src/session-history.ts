@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { createLogger } from "./logging/logger.js";
 
-const log = createLogger("beekeeper-session-history");
+const log = createLogger("relay-session-history");
 
 const MAX_SESSIONS = 50;
 const MAX_PREVIEW_CHARS = 200;
 /** How many lines to scan before giving up on finding a user message */
 const MAX_SCAN_LINES = 20;
-/** Skip Beekeeper's inaugural prompt */
-const BEEKEEPER_INIT_PROMPT = "You are now connected. Briefly acknowledge readiness.";
+/** Skip the initial connection prompt */
+export const INIT_PROMPT = "You are now connected. Briefly acknowledge readiness.";
 
 export interface WorkspaceSession {
   sessionId: string;
@@ -29,7 +29,7 @@ export function pathToProjectKey(absolutePath: string): string {
 
 /**
  * Extract the first real user message from a session JSONL file.
- * Skips the Beekeeper init prompt ("You are now connected...").
+ * Skips the init prompt ("You are now connected...").
  * Returns null if no user message found within MAX_SCAN_LINES.
  */
 async function extractPreview(filePath: string): Promise<string | null> {
@@ -56,8 +56,8 @@ async function extractPreview(filePath: string): Promise<string | null> {
           const textBlock = content.find((b: { type: string }) => b.type === "text");
           if (!textBlock?.text) continue;
 
-          // Skip Beekeeper's init prompt — grab the next real message
-          if (textBlock.text === BEEKEEPER_INIT_PROMPT) continue;
+          // Skip the init prompt — grab the next real message
+          if (textBlock.text === INIT_PROMPT) continue;
 
           const text = textBlock.text as string;
           result = text.length > MAX_PREVIEW_CHARS ? text.slice(0, MAX_PREVIEW_CHARS) + "..." : text;

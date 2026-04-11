@@ -43,14 +43,14 @@ export type ServerMessage =
   | { type: "error"; message: string; sessionId?: string }
   | { type: "pong" };
 
-export interface BeekeeperConfig {
+export interface RelayConfig {
   port: number;
   model: string;
   confirmOperations: string[];
   jwtSecret: string;
   adminSecret: string;
-  mongoUri: string;
-  mongoDbName: string;
   dataDir: string;
+  defaultWorkspace?: string;
+  workspaces?: Record<string, string>;
   plugins?: string[];
 }

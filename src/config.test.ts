@@ -13,6 +13,7 @@ vi.mock("yaml", () => ({
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { loadConfig } from "./config.js";
+import type { RelayConfig } from "./types.js";
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -25,10 +26,9 @@ describe("loadConfig", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     process.env = { ...originalEnv };
-    process.env.BEEKEEPER_JWT_SECRET = "test-jwt-secret";
-    process.env.BEEKEEPER_ADMIN_SECRET = "test-admin-secret";
-    process.env.MONGO_URI = "mongodb://localhost:27017";
-    process.env.BEEKEEPER_CONFIG = "/tmp/beekeeper.yaml";
+    process.env.RELAY_JWT_SECRET = "test-jwt-secret";
+    process.env.RELAY_ADMIN_SECRET = "test-admin-secret";
+    process.env.RELAY_CONFIG = "/tmp/relay.yaml";
     process.env.HOME = "/Users/testuser";
     mockReaddirSync.mockReturnValue([] as any);
   });
@@ -37,7 +37,7 @@ describe("loadConfig", () => {
     process.env = originalEnv;
   });
 
-  it("loads a valid YAML config and returns correct BeekeeperConfig structure", () => {
+  it("loads a valid YAML config and returns correct RelayConfig structure", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("yaml content");
     mockParseYaml.mockReturnValue({
@@ -54,8 +54,6 @@ describe("loadConfig", () => {
       confirmOperations: ["rm -rf", "git push --force"],
       jwtSecret: "test-jwt-secret",
       adminSecret: "test-admin-secret",
-      mongoUri: "mongodb://localhost:27017",
-      mongoDbName: "hive",
     });
     expect(config).toHaveProperty("plugins");
   });
@@ -63,34 +61,27 @@ describe("loadConfig", () => {
   it("throws if config file not found", () => {
     mockExistsSync.mockReturnValue(false);
 
-    expect(() => loadConfig()).toThrow("Beekeeper config not found");
+    expect(() => loadConfig()).toThrow("Relay config not found");
   });
 
-  it("throws if BEEKEEPER_JWT_SECRET env var is missing", () => {
+  it("throws if RELAY_JWT_SECRET env var is missing", () => {
+    delete process.env.RELAY_JWT_SECRET;
     delete process.env.BEEKEEPER_JWT_SECRET;
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("yaml content");
     mockParseYaml.mockReturnValue({ port: 3099 });
 
-    expect(() => loadConfig()).toThrow("Missing required env var: BEEKEEPER_JWT_SECRET");
+    expect(() => loadConfig()).toThrow("Missing required env var: RELAY_JWT_SECRET");
   });
 
-  it("throws if BEEKEEPER_ADMIN_SECRET env var is missing", () => {
+  it("throws if RELAY_ADMIN_SECRET env var is missing", () => {
+    delete process.env.RELAY_ADMIN_SECRET;
     delete process.env.BEEKEEPER_ADMIN_SECRET;
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("yaml content");
     mockParseYaml.mockReturnValue({ port: 3099 });
 
-    expect(() => loadConfig()).toThrow("Missing required env var: BEEKEEPER_ADMIN_SECRET");
-  });
-
-  it("throws if MONGO_URI env var is missing", () => {
-    delete process.env.MONGO_URI;
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("yaml content");
-    mockParseYaml.mockReturnValue({ port: 3099 });
-
-    expect(() => loadConfig()).toThrow("Missing required env var: MONGO_URI");
+    expect(() => loadConfig()).toThrow("Missing required env var: RELAY_ADMIN_SECRET");
   });
 
   it("falls back to default port (3099) when port is missing", () => {
@@ -125,10 +116,83 @@ describe("loadConfig", () => {
     expect(config.confirmOperations.length).toBeGreaterThan(0);
   });
 
-  it("uses BEEKEEPER_CONFIG env var to locate config file", () => {
-    process.env.BEEKEEPER_CONFIG = "/custom/path/beekeeper.yaml";
+  it("uses RELAY_CONFIG env var to locate config file", () => {
+    process.env.RELAY_CONFIG = "/custom/path/relay.yaml";
     mockExistsSync.mockReturnValue(false);
 
-    expect(() => loadConfig()).toThrow("/custom/path/beekeeper.yaml");
+    expect(() => loadConfig()).toThrow("/custom/path/relay.yaml");
+  });
+
+  it("falls back to default data dir ~/.relay/data when not configured", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({});
+    delete process.env.RELAY_DATA_DIR;
+    delete process.env.BEEKEEPER_DATA_DIR;
+
+    const config = loadConfig();
+
+    expect(config.dataDir).toContain(".relay/data");
+  });
+
+  it("parses defaultWorkspace and workspaces from YAML", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      port: 3099,
+      default_workspace: "my-project",
+      workspaces: { "my-project": "~/code/my-project" },
+    });
+    process.env.RELAY_JWT_SECRET = "jwt-secret";
+    process.env.RELAY_ADMIN_SECRET = "admin-secret";
+    const config = loadConfig();
+    expect(config.defaultWorkspace).toBe("my-project");
+    expect(config.workspaces).toEqual({ "my-project": "~/code/my-project" });
+  });
+
+  describe("env var backward compatibility", () => {
+    it("accepts old BEEKEEPER_JWT_SECRET env var", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue("port: 3099");
+      mockParseYaml.mockReturnValue({ port: 3099 });
+      delete process.env.RELAY_JWT_SECRET;
+      process.env.BEEKEEPER_JWT_SECRET = "old-secret";
+      process.env.RELAY_ADMIN_SECRET = "admin-secret";
+      const config = loadConfig();
+      expect(config.jwtSecret).toBe("old-secret");
+    });
+
+    it("prefers new RELAY_* vars when both old and new are set", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue("port: 3099");
+      mockParseYaml.mockReturnValue({ port: 3099 });
+      process.env.RELAY_JWT_SECRET = "new-secret";
+      process.env.BEEKEEPER_JWT_SECRET = "old-secret";
+      process.env.RELAY_ADMIN_SECRET = "admin-secret";
+      const config = loadConfig();
+      expect(config.jwtSecret).toBe("new-secret");
+    });
+
+    it("accepts old BEEKEEPER_ADMIN_SECRET env var", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue("port: 3099");
+      mockParseYaml.mockReturnValue({ port: 3099 });
+      process.env.RELAY_JWT_SECRET = "jwt-secret";
+      delete process.env.RELAY_ADMIN_SECRET;
+      process.env.BEEKEEPER_ADMIN_SECRET = "old-admin";
+      const config = loadConfig();
+      expect(config.adminSecret).toBe("old-admin");
+    });
+
+    it("accepts old BEEKEEPER_CONFIG env var for config path", () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue("port: 3099");
+      mockParseYaml.mockReturnValue({ port: 3099 });
+      process.env.RELAY_JWT_SECRET = "jwt-secret";
+      process.env.RELAY_ADMIN_SECRET = "admin-secret";
+      delete process.env.RELAY_CONFIG;
+      process.env.BEEKEEPER_CONFIG = "./beekeeper.yaml";
+      expect(() => loadConfig()).not.toThrow();
+    });
   });
 });

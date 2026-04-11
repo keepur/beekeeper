@@ -6,10 +6,10 @@ import type { WebSocket } from "ws";
 import { createLogger } from "./logging/logger.js";
 import type { ToolGuardian } from "./tool-guardian.js";
 import type { QuestionRelayer } from "./question-relayer.js";
-import type { ServerMessage, BeekeeperConfig } from "./types.js";
-import { listWorkspaceSessions as scanWorkspaceSessions } from "./session-history.js";
+import type { ServerMessage, RelayConfig } from "./types.js";
+import { listWorkspaceSessions as scanWorkspaceSessions, INIT_PROMPT } from "./session-history.js";
 
-const log = createLogger("beekeeper-session");
+const log = createLogger("relay-session");
 
 export interface SessionSlot {
   sessionId: string;
@@ -64,13 +64,13 @@ export class SessionManager {
   private clients = new Map<string, WebSocket>();
   private guardian: ToolGuardian;
   private questionRelayer: QuestionRelayer;
-  private config: BeekeeperConfig;
+  private config: RelayConfig;
   private sessionsFile: string;
   /** Global buffer for messages sent when no clients are connected */
   private globalBuffer: ServerMessage[] = [];
   private commands = new Map<string, CommandDef>();
 
-  constructor(config: BeekeeperConfig, guardian: ToolGuardian, questionRelayer: QuestionRelayer) {
+  constructor(config: RelayConfig, guardian: ToolGuardian, questionRelayer: QuestionRelayer) {
     this.config = config;
     this.guardian = guardian;
     this.questionRelayer = questionRelayer;
@@ -174,7 +174,7 @@ export class SessionManager {
     const initDeferred = createDeferred<string>();
     let initFired = false;
 
-    const donePromise = this.runQuery(slot, "You are now connected. Briefly acknowledge readiness.", {
+    const donePromise = this.runQuery(slot, INIT_PROMPT, {
       suppressClientSignals: opts?.suppressClientSignals,
       onInit: (realId) => {
         initFired = true;

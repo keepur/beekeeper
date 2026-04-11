@@ -2,10 +2,18 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
-import type { BeekeeperConfig } from "./types.js";
+import type { RelayConfig } from "./types.js";
 import { createLogger } from "./logging/logger.js";
 
-const log = createLogger("beekeeper-config");
+const log = createLogger("relay-config");
+
+function envWithFallback(newName: string, oldName: string): string | undefined {
+  const value = process.env[newName] ?? process.env[oldName];
+  if (!process.env[newName] && process.env[oldName]) {
+    log.warn(`Deprecated env var ${oldName} — use ${newName} instead`);
+  }
+  return value;
+}
 
 /**
  * Discover all installed Claude Code plugins from ~/.claude/plugins/installed_plugins.json.
@@ -53,28 +61,28 @@ function discoverUserSkills(): string[] {
   return paths;
 }
 
-export function loadConfig(): BeekeeperConfig {
-  const configPath = resolve(process.env.BEEKEEPER_CONFIG ?? "./beekeeper.yaml");
+export function loadConfig(): RelayConfig {
+  const configPath = resolve(envWithFallback("RELAY_CONFIG", "BEEKEEPER_CONFIG") ?? "./relay.yaml");
   if (!existsSync(configPath)) {
-    throw new Error(`Beekeeper config not found: ${configPath}`);
+    throw new Error(`Relay config not found: ${configPath}`);
   }
 
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
 
-  const jwtSecret = process.env.BEEKEEPER_JWT_SECRET;
+  const jwtSecret = envWithFallback("RELAY_JWT_SECRET", "BEEKEEPER_JWT_SECRET");
   if (!jwtSecret) {
-    throw new Error("Missing required env var: BEEKEEPER_JWT_SECRET");
+    throw new Error("Missing required env var: RELAY_JWT_SECRET");
   }
 
-  const adminSecret = process.env.BEEKEEPER_ADMIN_SECRET;
+  const adminSecret = envWithFallback("RELAY_ADMIN_SECRET", "BEEKEEPER_ADMIN_SECRET");
   if (!adminSecret) {
-    throw new Error("Missing required env var: BEEKEEPER_ADMIN_SECRET");
+    throw new Error("Missing required env var: RELAY_ADMIN_SECRET");
   }
 
-  const mongoUri = process.env.MONGO_URI;
-  if (!mongoUri) {
-    throw new Error("Missing required env var: MONGO_URI");
-  }
+  const dataDir =
+    envWithFallback("RELAY_DATA_DIR", "BEEKEEPER_DATA_DIR") ??
+    (raw.data_dir as string) ??
+    join(homedir(), ".relay", "data");
 
   // Auto-discover: installed plugins + user skills + explicit extras
   const installedPlugins = discoverInstalledPlugins();
@@ -103,9 +111,9 @@ export function loadConfig(): BeekeeperConfig {
     ],
     jwtSecret,
     adminSecret,
-    mongoUri,
-    mongoDbName: (raw.mongo_db as string) ?? "hive",
-    dataDir: process.env.BEEKEEPER_DATA_DIR ?? (raw.data_dir as string) ?? join(homedir(), ".beekeeper", "data"),
+    dataDir,
+    defaultWorkspace: raw.default_workspace as string | undefined,
+    workspaces: raw.workspaces as Record<string, string> | undefined,
     plugins: allPlugins,
   };
 }

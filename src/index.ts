@@ -3,20 +3,20 @@ import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { URL } from "node:url";
 import { timingSafeEqual } from "node:crypto";
+import { join } from "node:path";
 import { createLogger } from "./logging/logger.js";
 import { loadConfig } from "./config.js";
 import { ToolGuardian } from "./tool-guardian.js";
 import { QuestionRelayer } from "./question-relayer.js";
 import { SessionManager } from "./session-manager.js";
-import { BeekeeperDeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
+import { DeviceRegistry, type RelayDevice } from "./device-registry.js";
 import { validatePath } from "./path-utils.js";
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ClientMessage, ServerMessage } from "./types.js";
 import { handleImage, handleFile } from "./file-handler.js";
 
-const log = createLogger("beekeeper");
+const log = createLogger("relay");
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -25,9 +25,10 @@ async function main(): Promise<void> {
   const sessionManager = new SessionManager(config, guardian, questionRelayer);
   sessionManager.restoreSessions();
 
-  // Connect device registry (fail to start if MongoDB unreachable)
-  const deviceRegistry = new BeekeeperDeviceRegistry(config.mongoUri, config.mongoDbName, config.jwtSecret);
-  await deviceRegistry.connect();
+  // Open device registry (SQLite — synchronous)
+  const dbPath = join(config.dataDir, "devices.db");
+  const deviceRegistry = new DeviceRegistry(dbPath, config.jwtSecret, config.dataDir);
+  deviceRegistry.open();
 
   // Track connected devices (multiple clients allowed)
   const connectedClients = new Map<string, WebSocket>();
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
     return timingSafeEqual(provided, expected);
   }
 
-  async function verifyDeviceToken(req: IncomingMessage): Promise<BeekeeperDevice | null> {
+  function verifyDeviceToken(req: IncomingMessage): RelayDevice | null {
     const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return null;
@@ -102,7 +103,7 @@ async function main(): Promise<void> {
         }
 
         const name = typeof parsed.name === "string" ? parsed.name.trim() : undefined;
-        const result = await deviceRegistry.verifyPairingCode(parsed.code, name || undefined);
+        const result = deviceRegistry.verifyPairingCode(parsed.code, name || undefined);
         if (!result) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Invalid or expired pairing code" }));
@@ -131,7 +132,7 @@ async function main(): Promise<void> {
     // GET /me
     if (req.method === "GET" && url.pathname === "/me") {
       try {
-        const device = await verifyDeviceToken(req);
+        const device = verifyDeviceToken(req);
         if (!device) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
@@ -150,7 +151,7 @@ async function main(): Promise<void> {
     // PUT /me
     if (req.method === "PUT" && url.pathname === "/me") {
       try {
-        const device = await verifyDeviceToken(req);
+        const device = verifyDeviceToken(req);
         if (!device) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
@@ -171,7 +172,7 @@ async function main(): Promise<void> {
           res.end(JSON.stringify({ error: "Missing required field: name" }));
           return;
         }
-        const updated = await deviceRegistry.updateDevice(device._id, { name });
+        const updated = deviceRegistry.updateDevice(device._id, { name });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ deviceId: device._id, name: updated?.name ?? name }));
       } catch (err) {
@@ -182,7 +183,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // --- Admin API (Bearer BEEKEEPER_ADMIN_SECRET) ---
+    // --- Admin API (Bearer RELAY_ADMIN_SECRET) ---
     const isAdmin = verifyAdmin(req);
 
     // POST /devices
@@ -203,7 +204,7 @@ async function main(): Promise<void> {
           return;
         }
         const name = parsed.name || "Unnamed Device";
-        const device = await deviceRegistry.createDevice(name);
+        const device = deviceRegistry.createDevice(name);
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
@@ -229,7 +230,7 @@ async function main(): Promise<void> {
         return;
       }
       try {
-        const devices = await deviceRegistry.listDevices();
+        const devices = deviceRegistry.listDevices();
         const list = devices.map((d) => ({
           deviceId: d._id,
           name: d.name,
@@ -259,7 +260,7 @@ async function main(): Promise<void> {
       // GET /devices/:id
       if (req.method === "GET" && !action) {
         try {
-          const device = await deviceRegistry.getDevice(deviceId);
+          const device = deviceRegistry.getDevice(deviceId);
           if (!device) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Device not found" }));
@@ -303,7 +304,7 @@ async function main(): Promise<void> {
             res.end(JSON.stringify({ error: "No fields to update" }));
             return;
           }
-          const device = await deviceRegistry.updateDevice(deviceId, { name: parsed.name });
+          const device = deviceRegistry.updateDevice(deviceId, { name: parsed.name });
           if (!device) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Device not found" }));
@@ -322,7 +323,7 @@ async function main(): Promise<void> {
       // DELETE /devices/:id
       if (req.method === "DELETE" && !action) {
         try {
-          const ok = await deviceRegistry.deactivateDevice(deviceId);
+          const ok = deviceRegistry.deactivateDevice(deviceId);
           if (!ok) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Device not found or already inactive" }));
@@ -346,7 +347,7 @@ async function main(): Promise<void> {
       // POST /devices/:id/refresh-code
       if (req.method === "POST" && action === "refresh-code") {
         try {
-          const code = await deviceRegistry.refreshPairingCode(deviceId);
+          const code = deviceRegistry.refreshPairingCode(deviceId);
           if (!code) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Device not found" }));
@@ -386,7 +387,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      const device = await deviceRegistry.verifyToken(token);
+      const device = deviceRegistry.verifyToken(token);
       if (!device) {
         log.warn("WebSocket auth failed — invalid token");
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -406,16 +407,18 @@ async function main(): Promise<void> {
 
   // --- Multi-client connection management ---
 
-  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice) => {
+  wss.on("connection", (ws: WebSocket, device: RelayDevice) => {
     log.info("Client connected", { deviceId: device._id, name: device.name, totalClients: connectedClients.size + 1 });
 
     connectedClients.set(device._id, ws);
     sessionManager.addClient(device._id, ws);
 
     // Update lastSeenAt
-    deviceRegistry
-      .updateLastSeen(device._id)
-      .catch((err) => log.warn("Failed to update lastSeenAt", { error: String(err) }));
+    try {
+      deviceRegistry.updateLastSeen(device._id);
+    } catch (err) {
+      log.warn("Failed to update lastSeenAt", { error: String(err) });
+    }
 
     // Send session list to this device on connect
     const activeSessions = sessionManager.getActiveSessions();
@@ -443,9 +446,11 @@ async function main(): Promise<void> {
       try {
         switch (msg.type) {
           case "ping":
-            deviceRegistry
-              .updateLastSeen(device._id)
-              .catch((err) => log.warn("Failed to update lastSeenAt", { error: String(err) }));
+            try {
+              deviceRegistry.updateLastSeen(device._id);
+            } catch (err) {
+              log.warn("Failed to update lastSeenAt", { error: String(err) });
+            }
             ws.send(JSON.stringify({ type: "pong" }));
             break;
           case "message":
@@ -640,7 +645,7 @@ async function main(): Promise<void> {
 
   // --- Start ---
   server.listen(config.port, () => {
-    log.info("Beekeeper is running", { port: config.port });
+    log.info("Relay is running", { port: config.port });
   });
 
   // --- Graceful shutdown ---
@@ -650,7 +655,7 @@ async function main(): Promise<void> {
     await sessionManager.stopAll();
     wss.close();
     server.close();
-    await deviceRegistry.close();
+    deviceRegistry.close();
     process.exit(1);
   };
 
@@ -680,6 +685,6 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 main().catch((err) => {
-  log.error("Failed to start beekeeper", { error: String(err) });
+  log.error("Failed to start relay", { error: String(err) });
   process.exit(1);
 });

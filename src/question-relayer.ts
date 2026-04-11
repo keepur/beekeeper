@@ -2,10 +2,10 @@ import type { HookInput, HookJSONOutput, HookCallback } from "@anthropic-ai/clau
 import { createLogger } from "./logging/logger.js";
 import type { ServerMessage } from "./types.js";
 
-const log = createLogger("beekeeper-question-relayer");
+const log = createLogger("relay-question-relayer");
 
 /**
- * Non-blocking question relay for beekeeper sessions.
+ * Non-blocking question relay for relay sessions.
  *
  * When the SDK calls AskUserQuestion, this hook:
  * 1. Formats the question as plain text
