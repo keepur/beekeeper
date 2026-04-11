@@ -1,0 +1,16 @@
+port: 3099
+model: claude-opus-4-6
+default_workspace: my-project
+
+workspaces:
+  my-project: ~/code/my-project
+  another: ~/code/another
+
+confirm_operations:
+  - "git push --force"
+  - "git branch -D"
+  - "rm -rf"
+  - "rm -r"
+  - "git reset --hard"
+  - "git checkout -- ."
+  - "git clean -f"

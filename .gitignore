@@ -1,0 +1,6 @@
+node_modules/
+dist/
+relay.yaml
+.env
+*.db
+*.key.salt
