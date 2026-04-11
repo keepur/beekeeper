@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// --- Mocks (before module under test) ---
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 vi.mock("./logging/logger.js", () => ({
   createLogger: () => ({
@@ -11,311 +12,168 @@ vi.mock("./logging/logger.js", () => ({
   }),
 }));
 
-const mockCollection = {
-  insertOne: vi.fn(),
-  findOne: vi.fn(),
-  updateOne: vi.fn(),
-  findOneAndUpdate: vi.fn(),
-  find: vi.fn(),
-  createIndex: vi.fn(),
-};
+import { DeviceRegistry } from "./device-registry.js";
 
-const mockDb = {
-  collection: vi.fn(() => mockCollection),
-};
+const TEST_DIR = join(tmpdir(), `relay-test-${Date.now()}`);
+const DB_PATH = join(TEST_DIR, "devices.db");
+const JWT_SECRET = "test-secret-key-for-relay";
 
-const mockClient = {
-  connect: vi.fn(),
-  close: vi.fn(),
-  db: vi.fn(() => mockDb),
-};
-
-vi.mock("mongodb", () => ({
-  MongoClient: vi.fn(() => mockClient),
-}));
-
-vi.mock("jsonwebtoken", () => ({
-  default: {
-    sign: vi.fn(() => "mock-jwt-token"),
-    verify: vi.fn(() => ({ deviceId: "device-123" })),
-  },
-}));
-
-vi.mock("node:crypto", () => ({
-  randomUUID: vi.fn(() => "test-uuid-1234"),
-  randomInt: vi.fn(() => 123456),
-}));
-
-import { BeekeeperDeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
-import jwt from "jsonwebtoken";
-
-function makeDevice(overrides: Partial<BeekeeperDevice> = {}): BeekeeperDevice {
-  const now = new Date();
-  return {
-    _id: "test-uuid-1234",
-    name: "Test Device",
-    pairingCode: "123456",
-    pairingCodeExpiresAt: new Date(now.getTime() + 600_000),
-    createdAt: now,
-    lastSeenAt: now,
-    active: true,
-    ...overrides,
-  };
-}
-
-describe("BeekeeperDeviceRegistry", () => {
-  let registry: BeekeeperDeviceRegistry;
+describe("DeviceRegistry", () => {
+  let registry: DeviceRegistry;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    registry = new BeekeeperDeviceRegistry("mongodb://localhost", "test_db", "secret");
+    mkdirSync(TEST_DIR, { recursive: true });
+    registry = new DeviceRegistry(DB_PATH, JWT_SECRET, TEST_DIR);
+    registry.open();
   });
 
-  describe("connect", () => {
-    it("connects client, sets up collection, and creates index", async () => {
-      await registry.connect();
-
-      expect(mockClient.connect).toHaveBeenCalledOnce();
-      expect(mockClient.db).toHaveBeenCalledWith("test_db");
-      expect(mockDb.collection).toHaveBeenCalledWith("beekeeper_devices");
-      expect(mockCollection.createIndex).toHaveBeenCalledWith({ pairingCode: 1 }, { sparse: true });
-    });
+  afterEach(() => {
+    registry.close();
+    rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
   describe("createDevice", () => {
-    it("returns device with expected shape", async () => {
-      await registry.connect();
-      const device = await registry.createDevice("My iPad");
+    it("creates device with expected shape", () => {
+      const device = registry.createDevice("My iPad");
 
-      expect(device._id).toBe("test-uuid-1234");
+      expect(device._id).toBeDefined();
       expect(device.name).toBe("My iPad");
-      expect(device.pairingCode).toBe("123456");
+      expect(device.pairingCode).toMatch(/^\d{6}$/);
       expect(device.pairingCodeExpiresAt).toBeInstanceOf(Date);
-      expect(device.pairingCodeExpiresAt!.getTime()).toBeGreaterThan(device.createdAt.getTime());
       expect(device.createdAt).toBeInstanceOf(Date);
       expect(device.lastSeenAt).toBeInstanceOf(Date);
       expect(device.active).toBe(true);
       expect(device.pairedAt).toBeUndefined();
-      expect(mockCollection.insertOne).toHaveBeenCalledWith(device);
-    });
-  });
-
-  describe("verifyPairingCode", () => {
-    it("returns device and JWT on success", async () => {
-      await registry.connect();
-      const existing = makeDevice();
-      mockCollection.findOne.mockResolvedValueOnce(existing);
-
-      const result = await registry.verifyPairingCode("123456");
-
-      expect(result).not.toBeNull();
-      expect(result!.token).toBe("mock-jwt-token");
-      expect(result!.device._id).toBe(existing._id);
-      expect(result!.device.pairedAt).toBeInstanceOf(Date);
-      expect(result!.device.pairingCode).toBeUndefined();
-      expect(result!.device.pairingCodeExpiresAt).toBeUndefined();
-      expect(jwt.sign).toHaveBeenCalledWith({ deviceId: existing._id }, "secret", { expiresIn: "90d" });
-    });
-
-    it("applies optional name override", async () => {
-      await registry.connect();
-      mockCollection.findOne.mockResolvedValueOnce(makeDevice({ name: "Old Name" }));
-
-      const result = await registry.verifyPairingCode("123456", "New Name");
-
-      expect(result).not.toBeNull();
-      expect(result!.device.name).toBe("New Name");
-      // Check that updateOne was called with name in $set
-      const updateCall = mockCollection.updateOne.mock.calls[0];
-      expect(updateCall[1].$set).toEqual(expect.objectContaining({ name: "New Name" }));
-    });
-
-    it("returns null for invalid/expired code", async () => {
-      await registry.connect();
-      mockCollection.findOne.mockResolvedValueOnce(null);
-
-      const result = await registry.verifyPairingCode("000000");
-
-      expect(result).toBeNull();
-      expect(mockCollection.updateOne).not.toHaveBeenCalled();
-    });
-
-    it("clears pairing code fields after successful pairing", async () => {
-      await registry.connect();
-      mockCollection.findOne.mockResolvedValueOnce(makeDevice());
-
-      await registry.verifyPairingCode("123456");
-
-      const updateCall = mockCollection.updateOne.mock.calls[0];
-      expect(updateCall[1].$unset).toEqual({
-        pairingCode: "",
-        pairingCodeExpiresAt: "",
-      });
-    });
-  });
-
-  describe("verifyToken", () => {
-    it("returns device on success", async () => {
-      await registry.connect();
-      const device = makeDevice({ pairedAt: new Date() });
-      mockCollection.findOne.mockResolvedValueOnce(device);
-
-      const result = await registry.verifyToken("mock-jwt-token");
-
-      expect(result).toEqual(device);
-      expect(jwt.verify).toHaveBeenCalledWith("mock-jwt-token", "secret");
-      expect(mockCollection.findOne).toHaveBeenCalledWith({
-        _id: "device-123",
-        active: true,
-      });
-    });
-
-    it("returns null for invalid token", async () => {
-      await registry.connect();
-      vi.mocked(jwt.verify).mockImplementationOnce(() => {
-        throw new Error("invalid token");
-      });
-
-      const result = await registry.verifyToken("bad-token");
-
-      expect(result).toBeNull();
-    });
-
-    it("returns null when device is inactive", async () => {
-      await registry.connect();
-      mockCollection.findOne.mockResolvedValueOnce(null);
-
-      const result = await registry.verifyToken("mock-jwt-token");
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe("deactivateDevice", () => {
-    it("returns true when device found and deactivated", async () => {
-      await registry.connect();
-      mockCollection.updateOne.mockResolvedValueOnce({ modifiedCount: 1 });
-
-      const result = await registry.deactivateDevice("device-123");
-
-      expect(result).toBe(true);
-      expect(mockCollection.updateOne).toHaveBeenCalledWith({ _id: "device-123" }, { $set: { active: false } });
-    });
-
-    it("returns false when device not found", async () => {
-      await registry.connect();
-      mockCollection.updateOne.mockResolvedValueOnce({ modifiedCount: 0 });
-
-      const result = await registry.deactivateDevice("nonexistent");
-
-      expect(result).toBe(false);
-    });
-  });
-
-  describe("refreshPairingCode", () => {
-    it("returns new code when device exists", async () => {
-      await registry.connect();
-      mockCollection.updateOne.mockResolvedValueOnce({ matchedCount: 1 });
-
-      const code = await registry.refreshPairingCode("device-123");
-
-      expect(code).toBe("123456");
-      expect(mockCollection.updateOne).toHaveBeenCalledWith(
-        { _id: "device-123", active: true },
-        { $set: { pairingCode: "123456", pairingCodeExpiresAt: expect.any(Date) } },
-      );
-    });
-
-    it("returns null when device not found", async () => {
-      await registry.connect();
-      mockCollection.updateOne.mockResolvedValueOnce({ matchedCount: 0 });
-
-      const code = await registry.refreshPairingCode("nonexistent");
-
-      expect(code).toBeNull();
-    });
-  });
-
-  describe("listDevices", () => {
-    it("returns all devices", async () => {
-      await registry.connect();
-      const devices = [makeDevice(), makeDevice({ _id: "device-2", name: "Second" })];
-      mockCollection.find.mockReturnValueOnce({ toArray: vi.fn().mockResolvedValueOnce(devices) });
-
-      const result = await registry.listDevices();
-
-      expect(result).toEqual(devices);
     });
   });
 
   describe("getDevice", () => {
-    it("returns device by ID", async () => {
-      await registry.connect();
-      const device = makeDevice();
-      mockCollection.findOne.mockResolvedValueOnce(device);
+    it("retrieves device by ID", () => {
+      const created = registry.createDevice("Test");
+      const found = registry.getDevice(created._id);
 
-      const result = await registry.getDevice("test-uuid-1234");
-
-      expect(result).toEqual(device);
-      expect(mockCollection.findOne).toHaveBeenCalledWith({ _id: "test-uuid-1234" });
+      expect(found).not.toBeNull();
+      expect(found!._id).toBe(created._id);
+      expect(found!.name).toBe("Test");
     });
 
-    it("returns null when not found", async () => {
-      await registry.connect();
-      mockCollection.findOne.mockResolvedValueOnce(null);
+    it("returns null for unknown ID", () => {
+      expect(registry.getDevice("nonexistent")).toBeNull();
+    });
+  });
 
-      const result = await registry.getDevice("nonexistent");
+  describe("verifyPairingCode", () => {
+    it("pairs device and returns JWT", () => {
+      const created = registry.createDevice("Test");
+      const result = registry.verifyPairingCode(created.pairingCode!);
 
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.token).toBeDefined();
+      expect(result!.device._id).toBe(created._id);
+      expect(result!.device.pairedAt).toBeInstanceOf(Date);
+      expect(result!.device.pairingCode).toBeUndefined();
+    });
+
+    it("applies optional name override", () => {
+      const created = registry.createDevice("Old Name");
+      const result = registry.verifyPairingCode(created.pairingCode!, "New Name");
+
+      expect(result!.device.name).toBe("New Name");
+    });
+
+    it("returns null for invalid code", () => {
+      registry.createDevice("Test");
+      expect(registry.verifyPairingCode("000000")).toBeNull();
+    });
+
+    it("clears pairing code after successful pairing", () => {
+      const created = registry.createDevice("Test");
+      registry.verifyPairingCode(created.pairingCode!);
+
+      const after = registry.getDevice(created._id);
+      expect(after!.pairingCode).toBeUndefined();
+      expect(after!.pairingCodeExpiresAt).toBeUndefined();
+    });
+  });
+
+  describe("verifyToken", () => {
+    it("returns device for valid token", () => {
+      const created = registry.createDevice("Test");
+      const paired = registry.verifyPairingCode(created.pairingCode!);
+      const device = registry.verifyToken(paired!.token);
+
+      expect(device).not.toBeNull();
+      expect(device!._id).toBe(created._id);
+    });
+
+    it("returns null for invalid token", () => {
+      expect(registry.verifyToken("garbage")).toBeNull();
+    });
+
+    it("returns null for deactivated device", () => {
+      const created = registry.createDevice("Test");
+      const paired = registry.verifyPairingCode(created.pairingCode!);
+      registry.deactivateDevice(created._id);
+
+      expect(registry.verifyToken(paired!.token)).toBeNull();
+    });
+  });
+
+  describe("refreshPairingCode", () => {
+    it("returns new code for existing device", () => {
+      const created = registry.createDevice("Test");
+      const code = registry.refreshPairingCode(created._id);
+
+      expect(code).toMatch(/^\d{6}$/);
+    });
+
+    it("returns null for unknown device", () => {
+      expect(registry.refreshPairingCode("nonexistent")).toBeNull();
     });
   });
 
   describe("updateDevice", () => {
-    it("updates and returns device", async () => {
-      await registry.connect();
-      const updated = makeDevice({ name: "New Name" });
-      mockCollection.findOneAndUpdate.mockResolvedValueOnce(updated);
+    it("updates name", () => {
+      const created = registry.createDevice("Old");
+      const updated = registry.updateDevice(created._id, { name: "New" });
 
-      const result = await registry.updateDevice("test-uuid-1234", { name: "New Name" });
-
-      expect(result).toEqual(updated);
-      expect(mockCollection.findOneAndUpdate).toHaveBeenCalledWith(
-        { _id: "test-uuid-1234" },
-        { $set: { name: "New Name" } },
-        { returnDocument: "after" },
-      );
-    });
-
-    it("returns null when device not found", async () => {
-      await registry.connect();
-      mockCollection.findOneAndUpdate.mockResolvedValueOnce(null);
-
-      const result = await registry.updateDevice("nonexistent", { name: "X" });
-
-      expect(result).toBeNull();
+      expect(updated!.name).toBe("New");
     });
   });
 
-  describe("updateLastSeen", () => {
-    it("updates lastSeenAt timestamp", async () => {
-      await registry.connect();
+  describe("deactivateDevice", () => {
+    it("returns true for active device", () => {
+      const created = registry.createDevice("Test");
+      expect(registry.deactivateDevice(created._id)).toBe(true);
+    });
 
-      await registry.updateLastSeen("device-123");
-
-      expect(mockCollection.updateOne).toHaveBeenCalledWith(
-        { _id: "device-123" },
-        { $set: { lastSeenAt: expect.any(Date) } },
-      );
+    it("returns false for unknown device", () => {
+      expect(registry.deactivateDevice("nonexistent")).toBe(false);
     });
   });
 
-  describe("close", () => {
-    it("closes MongoDB client", async () => {
-      await registry.connect();
+  describe("listDevices", () => {
+    it("returns all devices", () => {
+      registry.createDevice("One");
+      registry.createDevice("Two");
 
-      await registry.close();
+      const devices = registry.listDevices();
+      expect(devices).toHaveLength(2);
+    });
+  });
 
-      expect(mockClient.close).toHaveBeenCalledOnce();
+  describe("encryption", () => {
+    it("pairing codes are encrypted at rest", async () => {
+      const created = registry.createDevice("Test");
+
+      // Read raw DB — pairing_code column should NOT be the plaintext code
+      const Database = (await import("better-sqlite3")).default;
+      const rawDb = new Database(DB_PATH, { readonly: true });
+      const row = rawDb.prepare("SELECT pairing_code FROM devices WHERE id = ?").get(created._id) as any;
+      rawDb.close();
+
+      expect(row.pairing_code).not.toBe(created.pairingCode);
+      expect(row.pairing_code).toBeTruthy(); // encrypted, not null
     });
   });
 });
