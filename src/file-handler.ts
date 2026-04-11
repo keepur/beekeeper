@@ -2,11 +2,13 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { createLogger } from "./logging/logger.js";
-import { extractContent, IMAGE_TYPES } from "../files/file-processor.js";
+import { extractContent } from "./file-extractor.js";
 
-const log = createLogger("beekeeper-file-handler");
+const log = createLogger("relay-file-handler");
 
-const DOWNLOAD_DIR = join(tmpdir(), "bk-files");
+const IMAGE_TYPES = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic"]);
+
+const DOWNLOAD_DIR = join(tmpdir(), "relay-files");
 mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB decoded
