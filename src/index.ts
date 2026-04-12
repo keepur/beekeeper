@@ -33,7 +33,6 @@ async function main(): Promise<void> {
   deviceRegistry.open();
 
   // Capability manifest — populated by sibling processes via /internal/register-capability.
-  // TODO(KPR-5 step 7): wire startHealthLoop()/stopHealthLoop() into startup/shutdown.
   const capabilities = new CapabilityManifest();
 
   // Track connected devices — multiple connections per device allowed.
@@ -821,6 +820,11 @@ async function main(): Promise<void> {
   });
 
   // --- Start ---
+  capabilities.startHealthLoop(
+    config.capabilitiesHealthIntervalMs,
+    config.capabilitiesFailureThreshold,
+  );
+
   server.listen(config.port, () => {
     log.info("Beekeeper is running", { port: config.port });
   });
@@ -842,6 +846,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     log.info("Shutting down");
     clearInterval(reapTimer);
+    capabilities.stopHealthLoop();
     sessionManager.persistSessions();
     await sessionManager.stopAll();
     wss.close();
