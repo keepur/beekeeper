@@ -424,6 +424,7 @@ async function main(): Promise<void> {
                   log.warn("Failed to close upstream ws on revoke", { error: String(err) });
                 }
               }
+              conn.dispose?.();
             }
           }
           res.writeHead(200, { "Content-Type": "application/json" });

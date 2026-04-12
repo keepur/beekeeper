@@ -23,6 +23,7 @@ switch (command) {
       process.exit(1);
     }
     let deviceRegistry: import("./device-registry.js").DeviceRegistry | undefined;
+    let pairExitCode = 0;
     try {
       const { loadConfig } = await import("./config.js");
       const { DeviceRegistry } = await import("./device-registry.js");
@@ -38,7 +39,7 @@ switch (command) {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`beekeeper pair failed: ${msg}`);
-      process.exit(1);
+      pairExitCode = 1;
     } finally {
       try {
         deviceRegistry?.close();
@@ -46,6 +47,7 @@ switch (command) {
         // ignore close errors
       }
     }
+    if (pairExitCode) process.exit(pairExitCode);
     break;
   }
   case "migrate": {
