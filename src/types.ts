@@ -43,7 +43,7 @@ export type ServerMessage =
   | { type: "error"; message: string; sessionId?: string }
   | { type: "pong" };
 
-export interface RelayConfig {
+export interface BeekeeperConfig {
   port: number;
   model: string;
   confirmOperations: string[];

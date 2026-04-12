@@ -54,7 +54,7 @@ describe("handleImage", () => {
 
     expect(result).toContain("The user attached an image: screenshot.png");
     expect(result).toContain("Read this file before responding (it is an image):");
-    expect(result).toContain(join(tmpdir(), "relay-files"));
+    expect(result).toContain(join(tmpdir(), "beekeeper-files"));
 
     // Verify file was written
     const pathMatch = result.match(/: (\/.*\.png)$/m);

@@ -22,16 +22,16 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 import { SessionManager } from "./session-manager.js";
 import { ToolGuardian } from "./tool-guardian.js";
 import { QuestionRelayer } from "./question-relayer.js";
-import type { RelayConfig } from "./types.js";
+import type { BeekeeperConfig } from "./types.js";
 
-function makeConfig(overrides: Partial<RelayConfig> = {}): RelayConfig {
+function makeConfig(overrides: Partial<BeekeeperConfig> = {}): BeekeeperConfig {
   return {
     port: 3099,
     model: "claude-sonnet-4-5",
     confirmOperations: [],
     jwtSecret: "test-jwt-secret",
     adminSecret: "test-admin-secret",
-    dataDir: "/tmp/relay-test-data",
+    dataDir: "/tmp/beekeeper-test-data",
     ...overrides,
   };
 }
@@ -78,7 +78,7 @@ async function drainWelcome(manager: SessionManager, sessionId: string): Promise
 }
 
 describe("SessionManager", () => {
-  let config: RelayConfig;
+  let config: BeekeeperConfig;
   let guardian: ToolGuardian;
   let questionRelayer: QuestionRelayer;
 

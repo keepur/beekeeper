@@ -7,7 +7,7 @@
 import { extname } from "node:path";
 import { createLogger } from "./logging/logger.js";
 
-const log = createLogger("relay-file-extractor");
+const log = createLogger("beekeeper-file-extractor");
 
 const TEXT_TYPES = new Set([
   "csv", "tsv", "txt", "text", "md", "markdown",

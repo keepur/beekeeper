@@ -19,7 +19,7 @@ switch (command) {
   case "migrate": {
     const flag = process.argv[3];
     if (flag !== "--from-mongo") {
-      console.error("Usage: relay migrate --from-mongo");
+      console.error("Usage: beekeeper migrate --from-mongo");
       console.error("\nExports devices from MongoDB beekeeper_devices collection to SQLite.");
       console.error("Requires: MONGO_URI env var set to your MongoDB connection string.");
       process.exit(1);
@@ -78,7 +78,7 @@ switch (command) {
       await mongo.close();
       console.log(`\nMigrated ${migrated} devices from MongoDB to ${dbPath}`);
       console.log("Note: Pairing codes were not migrated (ephemeral). Use POST /devices/:id/refresh-code to re-pair.");
-      console.log("Verify with: relay (start server, check GET /devices)");
+      console.log("Verify with: beekeeper (start server, check GET /devices)");
     } catch (err: any) {
       if (err.code === "MODULE_NOT_FOUND" || err.code === "ERR_MODULE_NOT_FOUND") {
         console.error("mongodb package not installed. Run: npm install mongodb");

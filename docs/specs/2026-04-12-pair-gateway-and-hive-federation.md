@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-12
 **Status:** Draft
-**Repos affected:** `relay` (this repo), `hive`, `keepur-ios`
+**Repos affected:** `beekeeper` (this repo), `hive`, `keepur-ios`
 
 ## Problem
 
@@ -10,7 +10,7 @@ Today, device pairing and WebSocket auth are fragmented across services:
 
 - **Hive** runs its own WS adapter on `*:3200` with its own `/pair` endpoint, its own JWT secret, its own Mongo-backed `devices` collection. `dodi-shop-ios` pairs against `https://shop.dodihome.com/pair` and talks to this.
 - **Beekeeper** (the Claude Code session gateway, pre-extraction copy living at `hive/src/beekeeper/`) runs a *separate* server with its own `/pair`, its own JWT secret, its own Mongo-backed `devices` collection. `keepur-ios`'s Chat tab pairs against `http://beekeeper.dodihome.com/pair` and talks to this.
-- **Relay** (this repo) is the extracted, standalone version of Beekeeper with SQLite + AES column encryption. Not yet deployed.
+- **`@keepur/beekeeper`** (this repo) is the extracted, standalone version of the session gateway with SQLite + AES column encryption. Not yet deployed.
 
 From the user's perspective, a mac mini running Hive + Beekeeper is "one server," but pairing it requires two independent flows, two tokens, two trust domains. Adding a Team tab to Keepur surfaced this: the client has no way to produce a Hive-valid token from a Beekeeper pairing, and vice versa.
 
@@ -22,11 +22,11 @@ There is also a naming insight worth capturing: **there can be a Beekeeper witho
 2. **Capability-driven tabs.** The server advertises which services it runs (`beekeeper`, and optionally `hive`). Keepur renders tabs based on that manifest. A box running only Beekeeper shows the Beekeeper tab. A box running Beekeeper + Hive shows Beekeeper + Team.
 3. **Hive becomes stateless about devices.** Beekeeper is the sole device registry on a box. Hive has no `devices` collection, no pairing endpoint, no JWT secret of its own.
 4. **Hive's WS adapter moves to localhost-only.** The public WS endpoint on `*:3200` goes away. Beekeeper is the only process that accepts external connections for Hive-bound traffic.
-5. **`hive/src/beekeeper/` is deleted.** Its duplicated Mongo-backed Claude Code session gateway is replaced by this repo (Relay/Beekeeper), running as a sibling process.
+5. **`hive/src/beekeeper/` is deleted.** Its duplicated Mongo-backed Claude Code session gateway is replaced by this repo, running as a sibling process.
 
 ## Non-goals
 
-- **Renaming `@keepur/relay` → `@keepur/beekeeper`.** The package/repo rename is a cosmetic follow-up, not part of this spec. Throughout this doc, "Beekeeper" refers to the service identity exposed to users and clients; the npm package name can stay `@keepur/relay` for now.
+- **Any user-visible rebranding beyond the npm/repo name.** The rename to `@keepur/beekeeper` has already happened. Throughout this doc, "Beekeeper" is both the service identity and the package name.
 - **Multi-server in Keepur.** The client will eventually need to store a list of paired servers for power users (e.g. one phone paired to dodi + personal instances), but this spec assumes a single-server client. The token/storage model should not preclude multi-server, but UI and keychain-list management are out of scope.
 - **Migrating existing paired devices.** When this ships, all current Keepur and dodi-shop-ios devices re-pair once. No data migration from Hive's `devices` collection or Beekeeper's current Mongo store.
 
@@ -70,7 +70,7 @@ On startup, Hive calls `POST http://127.0.0.1:<beekeeper>/internal/register-capa
 
 Beekeeper stores this in memory (not SQLite — it's runtime state). If Hive dies, Beekeeper detects it via health check and drops the capability from the manifest. On Hive restart, Hive re-registers.
 
-If no Hive registers, Beekeeper's capability manifest contains only `beekeeper`. This is the "relay-only box" deployment.
+If no Hive registers, Beekeeper's capability manifest contains only `beekeeper`. This is the "Beekeeper-only box" deployment — a dev laptop with Claude Code sessions but no agent runtime.
 
 ### Pair flow
 
@@ -120,7 +120,7 @@ This means Hive needs **no** `/internal/verify` endpoint on Beekeeper — the de
 
 ## Changes by repo
 
-### `relay` (this repo)
+### `beekeeper` (this repo)
 
 1. **Re-sync from `hive/src/beekeeper/`.** The extraction captured an older snapshot. Merge in changes since (notably commit `abd616e` "broadcast messages to all connected devices" and any auth/session fixes from commits since the extraction).
 2. **Add `/capabilities` endpoint.** Returns `{ capabilities: string[] }` based on registered capabilities + the always-present `beekeeper`.
@@ -128,11 +128,11 @@ This means Hive needs **no** `/internal/verify` endpoint on Beekeeper — the de
 4. **Extend JWT claims to include `caps`.** Populated at pair time from the current capability manifest.
 5. **WS upgrade handler reads channel join frame.** Routes `beekeeper` locally, proxies `team` to Hive's localhost WS.
 6. **Frame proxy implementation.** Bidirectional pipe between client WS and Hive WS, propagating close codes and errors in both directions.
-7. **Admin CLI update.** `relay device create <name>` outputs a pairing code for the operator to read to the user.
+7. **Admin CLI update.** `beekeeper device create <name>` outputs a pairing code for the operator to read to the user.
 
 ### `hive`
 
-1. **Delete `src/beekeeper/`.** Entire directory. Includes its tests, config, device registry, session manager, question relayer, tool guardian, file handler. These all live in `relay` now.
+1. **Delete `src/beekeeper/`.** Entire directory. Includes its tests, config, device registry, session manager, question relayer, tool guardian, file handler. These all live in `@keepur/beekeeper` now.
 2. **Delete Hive's device registry.** `src/channels/ws/device-registry.ts`, the `devices` Mongo collection, any admin REST endpoints under `/devices` in `src/channels/ws/ws-adapter.ts`. Hive is no longer a device registry.
 3. **Delete `/pair` from `ws-adapter.ts`.** Pairing is Beekeeper's job.
 4. **Bind Hive WS adapter to `127.0.0.1` only.** Previously `*:3200`. Update `WsAdapter` constructor + `createServer().listen(port, "127.0.0.1")`.
@@ -159,12 +159,12 @@ This means Hive needs **no** `/internal/verify` endpoint on Beekeeper — the de
 
 Ordered to avoid downtime on `dodi-shop-ios` (which real users depend on):
 
-1. **Re-sync relay from hive/src/beekeeper.** Get parity with current Beekeeper behavior including recent broadcast commit.
-2. **Deploy relay as a sibling process** on the mac mini, on a new port. Expose via a new cloudflared hostname. Verify with a test device.
-3. **Add capability registration to Hive (additive).** Hive registers with relay on startup but keeps its own WS adapter on `*:3200` and its own device registry. Both old and new pair flows work concurrently.
-4. **Update keepur-ios** to pair against the new relay hostname. Ship to TestFlight. Verify both Team and Beekeeper tabs work through the unified token.
-5. **Migrate dodi-shop-ios** to pair against the new relay hostname on next release.
-6. **Flip cloudflared:** `shop.dodihome.com` now routes to relay's public port, not Hive's 3200.
+1. **Re-sync beekeeper from hive/src/beekeeper.** Get parity with current in-hive Beekeeper behavior including recent broadcast commit.
+2. **Deploy beekeeper as a sibling process** on the mac mini, on a new port. Expose via a new cloudflared hostname. Verify with a test device.
+3. **Add capability registration to Hive (additive).** Hive registers with beekeeper on startup but keeps its own WS adapter on `*:3200` and its own device registry. Both old and new pair flows work concurrently.
+4. **Update keepur-ios** to pair against the new beekeeper hostname. Ship to TestFlight. Verify both Team and Beekeeper tabs work through the unified token.
+5. **Migrate dodi-shop-ios** to pair against the new beekeeper hostname on next release.
+6. **Flip cloudflared:** `shop.dodihome.com` now routes to beekeeper's public port, not Hive's 3200.
 7. **Delete Hive's `src/beekeeper/`, device registry, pair endpoints, admin secret.** Rebind WS adapter to `127.0.0.1`.
 8. **Delete legacy `beekeeper.dodihome.com` tunnel entry** if it existed.
 
@@ -175,7 +175,7 @@ Steps 1–4 are additive and reversible. Steps 5–8 are one-way but scoped to a
 1. **Beekeeper's public port.** Does it keep `3200` (inheriting from Hive's retired WS adapter) or pick a new canonical port? Leaning: pick a new one, leave 3200 to Hive's loopback binding forever.
 2. **Pair code UX.** Today it's CLI-only. Is a minimal web UI at `https://<host>/admin` worth building in v1, or defer until there's a second user who isn't on the terminal?
 3. **Multi-instance on one mac mini** (dodi + personal). Current thinking: each Hive instance has its own Beekeeper, separate hostnames, separate tunnels. Confirm before deploying personal instance behind this architecture.
-4. **Broadcast-to-all-devices** (commit `abd616e`). This currently lives in Hive's beekeeper copy. Confirm it moves cleanly into relay.
+4. **Broadcast-to-all-devices** (commit `abd616e`). This currently lives in Hive's beekeeper copy. Confirm it moves cleanly into `@keepur/beekeeper`.
 5. **Hive admin operations** (agent CRUD, model overrides) currently accessible via admin MCP tools run inside Hive. No change needed — they stay inside Hive, triggered by agents or Claude Code CLI sessions via MCP. This spec does not surface any admin UI to Keepur.
 
 ## References

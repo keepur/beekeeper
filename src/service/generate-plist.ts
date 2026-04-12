@@ -4,14 +4,14 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "../logging/logger.js";
 
-const log = createLogger("relay-service");
+const log = createLogger("beekeeper-service");
 
-const LABEL = "com.keepur.relay";
+const LABEL = "com.keepur.beekeeper";
 
 export function generatePlist(configDir?: string): string {
   const nodePath = execSync("which node", { encoding: "utf-8" }).trim();
   const indexPath = resolve(import.meta.dirname, "../index.js");
-  const workDir = configDir ?? join(homedir(), ".relay");
+  const workDir = configDir ?? join(homedir(), ".beekeeper");
   const logDir = join(workDir, "logs");
 
   mkdirSync(logDir, { recursive: true });
@@ -31,15 +31,15 @@ export function generatePlist(configDir?: string): string {
   <string>${workDir}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>RELAY_CONFIG</key>
-    <string>relay.yaml</string>
+    <key>BEEKEEPER_CONFIG</key>
+    <string>beekeeper.yaml</string>
   </dict>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${logDir}/relay.log</string>
+  <string>${logDir}/beekeeper.log</string>
   <key>StandardErrorPath</key>
-  <string>${logDir}/relay.err</string>
+  <string>${logDir}/beekeeper.err</string>
 </dict>
 </plist>`;
 }

@@ -9,14 +9,14 @@ import { loadConfig } from "./config.js";
 import { ToolGuardian } from "./tool-guardian.js";
 import { QuestionRelayer } from "./question-relayer.js";
 import { SessionManager } from "./session-manager.js";
-import { DeviceRegistry, type RelayDevice } from "./device-registry.js";
+import { DeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
 import { validatePath } from "./path-utils.js";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ClientMessage, ServerMessage } from "./types.js";
 import { handleImage, handleFile } from "./file-handler.js";
 
-const log = createLogger("relay");
+const log = createLogger("beekeeper");
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     return timingSafeEqual(provided, expected);
   }
 
-  function verifyDeviceToken(req: IncomingMessage): RelayDevice | null {
+  function verifyDeviceToken(req: IncomingMessage): BeekeeperDevice | null {
     const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return null;
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    // --- Admin API (Bearer RELAY_ADMIN_SECRET) ---
+    // --- Admin API (Bearer BEEKEEPER_ADMIN_SECRET) ---
     const isAdmin = verifyAdmin(req);
 
     // POST /devices
@@ -407,7 +407,7 @@ async function main(): Promise<void> {
 
   // --- Multi-client connection management ---
 
-  wss.on("connection", (ws: WebSocket, device: RelayDevice) => {
+  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice) => {
     log.info("Client connected", { deviceId: device._id, name: device.name, totalClients: connectedClients.size + 1 });
 
     connectedClients.set(device._id, ws);
@@ -645,7 +645,7 @@ async function main(): Promise<void> {
 
   // --- Start ---
   server.listen(config.port, () => {
-    log.info("Relay is running", { port: config.port });
+    log.info("Beekeeper is running", { port: config.port });
   });
 
   // --- Graceful shutdown ---
@@ -685,6 +685,6 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 main().catch((err) => {
-  log.error("Failed to start relay", { error: String(err) });
+  log.error("Failed to start beekeeper", { error: String(err) });
   process.exit(1);
 });

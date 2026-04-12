@@ -6,9 +6,9 @@ import jwt from "jsonwebtoken";
 import { createLogger } from "./logging/logger.js";
 import { createCryptoContext, type CryptoContext } from "./crypto.js";
 
-const log = createLogger("relay-device-registry");
+const log = createLogger("beekeeper-device-registry");
 
-export interface RelayDevice {
+export interface BeekeeperDevice {
   _id: string;
   name: string;
   pairingCode?: string;
@@ -67,7 +67,7 @@ export class DeviceRegistry {
     log.info("Device registry opened", { path: this.dbPath });
   }
 
-  private rowToDevice(row: DeviceRow): RelayDevice {
+  private rowToDevice(row: DeviceRow): BeekeeperDevice {
     return {
       _id: row.id,
       name: row.name,
@@ -80,7 +80,7 @@ export class DeviceRegistry {
     };
   }
 
-  createDevice(name: string): RelayDevice {
+  createDevice(name: string): BeekeeperDevice {
     const now = new Date();
     const code = randomInt(100000, 1000000).toString();
     const expiresAt = new Date(now.getTime() + PAIRING_CODE_TTL_MS);
@@ -105,12 +105,12 @@ export class DeviceRegistry {
     return { ...this.rowToDevice(row), pairingCode: code, pairingCodeExpiresAt: expiresAt };
   }
 
-  getDevice(deviceId: string): RelayDevice | null {
+  getDevice(deviceId: string): BeekeeperDevice | null {
     const row = this.db.prepare("SELECT * FROM devices WHERE id = ?").get(deviceId) as DeviceRow | undefined;
     return row ? this.rowToDevice(row) : null;
   }
 
-  verifyPairingCode(code: string, name?: string): { device: RelayDevice; token: string } | null {
+  verifyPairingCode(code: string, name?: string): { device: BeekeeperDevice; token: string } | null {
     const now = new Date();
     const rows = this.db.prepare(
       "SELECT * FROM devices WHERE active = 1 AND pairing_code IS NOT NULL AND pairing_code_exp > ?"
@@ -144,7 +144,7 @@ export class DeviceRegistry {
     const token = jwt.sign({ deviceId: matchRow.id }, this.jwtSecret, { expiresIn: "90d" });
     log.info("Device paired", { id: matchRow.id, name: finalName });
 
-    const device: RelayDevice = {
+    const device: BeekeeperDevice = {
       _id: matchRow.id,
       name: finalName,
       active: true,
@@ -157,7 +157,7 @@ export class DeviceRegistry {
     return { device, token };
   }
 
-  verifyToken(token: string): RelayDevice | null {
+  verifyToken(token: string): BeekeeperDevice | null {
     try {
       const payload = jwt.verify(token, this.jwtSecret) as { deviceId: string };
       const row = this.db.prepare("SELECT * FROM devices WHERE id = ? AND active = 1").get(payload.deviceId) as DeviceRow | undefined;
@@ -191,7 +191,7 @@ export class DeviceRegistry {
     this.db.prepare("UPDATE devices SET last_seen = ? WHERE id = ?").run(new Date().toISOString(), deviceId);
   }
 
-  updateDevice(deviceId: string, fields: { name?: string }): RelayDevice | null {
+  updateDevice(deviceId: string, fields: { name?: string }): BeekeeperDevice | null {
     const setClauses = Object.entries(fields)
       .filter(([, v]) => v !== undefined)
       .map(([k]) => `${k} = @${k}`)
@@ -213,7 +213,7 @@ export class DeviceRegistry {
     return false;
   }
 
-  listDevices(): RelayDevice[] {
+  listDevices(): BeekeeperDevice[] {
     const rows = this.db.prepare("SELECT * FROM devices").all() as DeviceRow[];
     return rows.map((row) => this.rowToDevice(row));
   }

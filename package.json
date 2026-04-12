@@ -1,13 +1,13 @@
 {
-  "name": "@keepur/relay",
+  "name": "@keepur/beekeeper",
   "version": "1.0.0",
   "description": "Claude Code session gateway — real development from your phone",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "relay": "dist/cli.js"
+    "beekeeper": "dist/cli.js"
   },
-  "files": ["dist/", "relay.yaml.example", "LICENSE", "README.md"],
+  "files": ["dist/", "beekeeper.yaml.example", "LICENSE", "README.md"],
   "engines": {
     "node": ">=22.0.0"
   },

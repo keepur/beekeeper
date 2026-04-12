@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { createLogger } from "./logging/logger.js";
 
-const log = createLogger("relay-session-history");
+const log = createLogger("beekeeper-session-history");
 
 const MAX_SESSIONS = 50;
 const MAX_PREVIEW_CHARS = 200;

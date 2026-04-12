@@ -14,9 +14,9 @@ vi.mock("./logging/logger.js", () => ({
 
 import { DeviceRegistry } from "./device-registry.js";
 
-const TEST_DIR = join(tmpdir(), `relay-test-${Date.now()}`);
+const TEST_DIR = join(tmpdir(), `beekeeper-test-${Date.now()}`);
 const DB_PATH = join(TEST_DIR, "devices.db");
-const JWT_SECRET = "test-secret-key-for-relay";
+const JWT_SECRET = "test-secret-key-for-beekeeper";
 
 describe("DeviceRegistry", () => {
   let registry: DeviceRegistry;
