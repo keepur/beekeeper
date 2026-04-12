@@ -472,8 +472,24 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Parse channel query param — defaults to "beekeeper" for backwards compat.
+      const channel = url.searchParams.get("channel") ?? "beekeeper";
+      if (channel !== "beekeeper" && channel !== "team") {
+        log.warn("WebSocket upgrade rejected — invalid channel", { channel });
+        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      if (channel === "team" && capabilities.get("hive") === undefined) {
+        log.warn("WebSocket upgrade rejected — hive-unavailable", { deviceId: device._id });
+        socket.write("HTTP/1.1 503 hive-unavailable\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
       wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, device);
+        wss.emit("connection", ws, device, channel);
       });
     } catch (err) {
       log.error("WebSocket upgrade error", { error: String(err) });
@@ -484,8 +500,18 @@ async function main(): Promise<void> {
 
   // --- Multi-client connection management ---
 
-  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice) => {
-    log.info("Client connected", { deviceId: device._id, name: device.name });
+  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice, channel: "beekeeper" | "team" = "beekeeper") => {
+    log.info("Client connected", { deviceId: device._id, name: device.name, channel });
+
+    // TODO(KPR-5 step 4/5): team-channel handling is incomplete. Step 4 will
+    // hook the hive proxy here and Step 5 will refactor connection tracking.
+    // Until then, reject team-channel upgrades cleanly so the socket isn't
+    // mistakenly fed into the beekeeper message loop below.
+    if (channel === "team") {
+      log.warn("team channel not yet implemented — closing", { deviceId: device._id });
+      ws.close(1011, "not yet implemented");
+      return;
+    }
 
     let clientSet = connectedClients.get(device._id);
     if (!clientSet) {
