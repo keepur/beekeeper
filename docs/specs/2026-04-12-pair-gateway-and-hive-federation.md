@@ -52,7 +52,8 @@ There is also a naming insight worth capturing: **there can be a Beekeeper witho
                     │   127.0.0.1:3200                │
                     │   ─ WS adapter (localhost only) │
                     │   ─ no /pair, no devices coll.  │
-                    │   ─ verify tokens via Beekeeper │
+                    │   ─ no JWT secret; trusts       │
+                    │     loopback + ?internal=1      │
                     └─────────────────────────────────┘
 ```
 
@@ -68,42 +69,59 @@ On startup, Hive calls `POST http://127.0.0.1:<beekeeper>/internal/register-capa
 }
 ```
 
-Beekeeper stores this in memory (not SQLite — it's runtime state). If Hive dies, Beekeeper detects it via health check and drops the capability from the manifest. On Hive restart, Hive re-registers.
+**Loopback enforcement.** Beekeeper rejects this endpoint with 403 unless `req.socket.remoteAddress` is `127.0.0.1` or `::1`. No other auth — the loopback check is the auth.
+
+Beekeeper stores this in memory (not SQLite — it's runtime state).
+
+**Health check cadence.** Beekeeper polls `healthUrl` every **10s**. Two consecutive failures drop the capability from the manifest.
+
+**Hive re-registration cadence.** Because Beekeeper's manifest is in-memory, a Beekeeper restart silently loses Hive's registration. Hive therefore re-registers on a **30s interval** regardless of prior state — the call is idempotent (re-register overwrites), cheap, and makes start order between the two processes irrelevant. Hive also calls register immediately on its own startup so the tab doesn't wait up to 30s for first registration.
 
 If no Hive registers, Beekeeper's capability manifest contains only `beekeeper`. This is the "Beekeeper-only box" deployment — a dev laptop with Claude Code sessions but no agent runtime.
 
 ### Pair flow
 
-1. Client: `POST https://<host>/pair { code, name }` (unchanged from `dodi-shop-ios` today)
+1. Client: `POST https://<host>/pair { code, name }` (request body uses `name`; response below uses `deviceName` — intentional asymmetry matching today's Beekeeper API, kept for `dodi-shop-ios` back-compat).
 2. Beekeeper verifies the pairing code against its SQLite `devices` table.
-3. Beekeeper mints **one JWT** signed with its own secret. Claims include `deviceId`, `name`, and a `caps` array reflecting the current capability manifest (e.g. `["beekeeper", "hive"]`).
-4. Beekeeper returns:
+3. Beekeeper mints **one JWT** signed with its own secret. Claims are minimal: `deviceId` and `name` only. **Capabilities are NOT baked into the JWT** — they're dynamic runtime state (Hive may start/stop after pairing) and staleness would force needless re-pairs.
+4. Beekeeper returns (additive to today's response — `deviceName` is kept for `dodi-shop-ios` back-compat, `capabilities` is new):
    ```json
    {
      "token": "...",
      "deviceId": "...",
-     "name": "...",
+     "deviceName": "...",
      "capabilities": ["beekeeper", "hive"]
    }
    ```
-5. Client stores the token in Keychain under a single slot. Client reads `capabilities` to decide which tabs to render.
+5. Client stores the token in Keychain. Client uses `capabilities` from the pair response for the initial tab set, then refreshes via `GET /capabilities` (token-authed) on app foreground and on WS reconnect so the tab set tracks Hive availability without re-pairing.
 
 **Admin surface for minting pair codes:** unchanged from Beekeeper today. A CLI or admin API (`POST /devices` with Bearer admin secret) produces a 6-digit code, which the operator reads from the terminal and gives to the phone owner. No new GUI needed for v1.
 
 ### WebSocket routing
 
-Client opens one socket: `wss://<host>/?token=<jwt>`.
+Client opens one socket: `wss://<host>/?token=<jwt>`. Optionally `&channel=team` to select a non-default channel at upgrade time.
 
 Beekeeper's WS upgrade handler:
 
 1. Validates the JWT with its own secret.
-2. Accepts the upgrade.
-3. Reads the first client frame, which **must** be `{"type":"join","channel":"beekeeper"|"team"}`.
-4. Based on channel:
+2. Reads `channel` from the query string. Default is `beekeeper` (preserves `dodi-shop-ios` back-compat — existing clients send no channel and get the Beekeeper session manager, exactly as today).
+3. If `channel=team` but Hive is not in the current capability manifest, reject the upgrade with HTTP 503 and reason `hive-unavailable` before calling `handleUpgrade`.
+4. Accepts the upgrade. Based on channel:
    - `beekeeper` → handled locally (existing Claude Code session manager).
    - `team` → Beekeeper opens a sibling socket to `ws://127.0.0.1:3200/?internal=1&deviceId=<id>&name=<name>` and proxies frames bidirectionally between client and Hive until either side closes.
 
-The `internal=1` query flag tells Hive "this connection is coming from Beekeeper, don't try to verify a device JWT." Hive trusts the connection because it's on localhost and the flag is only honored when the source address is `127.0.0.1`. `deviceId` and `name` are passed in so Hive has device metadata without needing its own registry.
+**Rationale for query-string channel selection over a join frame:** no timeout state machine, no ambiguity about what the first frame means, and — critically — no change to `dodi-shop-ios`'s current upgrade path (it just keeps working as the default `beekeeper` channel).
+
+The `internal=1` query flag tells Hive "this connection is coming from Beekeeper, don't try to verify a device JWT." Hive honors the flag **only** when `req.socket.remoteAddress` is loopback (`127.0.0.1`/`::1`); rejected otherwise. Combined with Hive binding its WS adapter to `127.0.0.1` only, this is defense-in-depth at the OS level and the application level. `deviceId` and `name` are passed in so Hive has device metadata without needing its own registry.
+
+**Frame proxy implementation requirements:**
+
+- **Binary and text frames** both forwarded verbatim (no JSON parsing — the proxy is opaque).
+- **Close-code propagation** in both directions: if either side closes with code/reason, forward to the other.
+- **Error handling on upstream connect:** if the sibling socket to Hive fails to open (Hive just died between manifest check and connect), close the client socket with 1011 `hive-unavailable`.
+- **Backpressure:** when `ws.bufferedAmount` on the downstream side exceeds 4 MB, pause reading on the upstream side until it drains. Unbounded buffering on a slow mobile client would otherwise OOM the gateway.
+- **Ping/pong:** Beekeeper answers client pings itself (to keep the public socket alive independent of Hive latency) and does not forward them. The upstream socket to Hive gets its own keepalive ping loop from Beekeeper.
+- **Tracking for revocation:** each proxied pair (`clientWs`, `upstreamWs`) is registered in `connectedClients` so that `DELETE /devices/:id` can close both sides. Today's map only tracks `clientWs` — this needs to be extended (see §Changes by repo / beekeeper item 8).
 
 **Rationale for proxying frames rather than returning a direct URL to Hive:** keeps Hive's WS adapter off the public network, makes Beekeeper the single choke point for device auth/revocation, and means the client only ever maintains one WebSocket per server.
 
@@ -122,61 +140,86 @@ This means Hive needs **no** `/internal/verify` endpoint on Beekeeper — the de
 
 ### `beekeeper` (this repo)
 
-1. **Re-sync from `hive/src/beekeeper/`.** The extraction captured an older snapshot. Merge in changes since (notably commit `abd616e` "broadcast messages to all connected devices" and any auth/session fixes from commits since the extraction).
-2. **Add `/capabilities` endpoint.** Returns `{ capabilities: string[] }` based on registered capabilities + the always-present `beekeeper`.
-3. **Add `/internal/register-capability` endpoint.** Loopback-only. In-memory storage with health checks.
-4. **Extend JWT claims to include `caps`.** Populated at pair time from the current capability manifest.
-5. **WS upgrade handler reads channel join frame.** Routes `beekeeper` locally, proxies `team` to Hive's localhost WS.
-6. **Frame proxy implementation.** Bidirectional pipe between client WS and Hive WS, propagating close codes and errors in both directions.
-7. **Admin CLI update.** `beekeeper device create <name>` outputs a pairing code for the operator to read to the user.
+1. **Re-sync from `hive/src/beekeeper/`.** ✅ **Done** as of commits `dac70b7` (broadcast to all connected devices) and `2220d58` (session reaper). Listed here for history; no further action.
+2. **Add `GET /capabilities` endpoint.** Token-authed (Bearer device JWT). Returns `{ capabilities: string[] }` where the list is `["beekeeper", ...registered]`. `beekeeper` is always first and always present.
+3. **Add `POST /internal/register-capability` endpoint.** Loopback-enforced (`remoteAddress` ∈ {`127.0.0.1`, `::1`}, else 403). Body: `{ name, localWsUrl, healthUrl }`. In-memory manifest map keyed by `name`. Idempotent — a re-register overwrites.
+4. **Capability health checker.** Per entry: poll `healthUrl` every 10s; drop after 2 consecutive failures. Log add/drop transitions.
+5. **Pair response adds `capabilities`.** Keep `deviceName` (not `name`) to match the current response shape that `dodi-shop-ios` depends on. Do **not** add `caps` to the JWT claims.
+6. **WS upgrade handler reads `?channel=` from query string.** Default `beekeeper` (back-compat with today's clients). `team` → open upstream proxy to Hive. If `team` requested while Hive is not in the manifest, reject upgrade with 503 before `handleUpgrade`.
+7. **Frame proxy implementation** per §WebSocket routing requirements: binary+text passthrough, close-code propagation, backpressure at 4 MB `bufferedAmount`, beekeeper-terminated pings, upstream keepalive, `1011 hive-unavailable` on upstream connect failure.
+8. **Extend `connectedClients` tracking to cover proxied pairs.** Today the map is `Map<deviceId, Set<WebSocket>>` of client sockets only (`src/index.ts:34`). Change the value shape (or add a sibling map) so each entry can carry an optional upstream `WebSocket` reference. `DELETE /devices/:id` iterates and closes both sides. Spec-level requirement; implementation picks the exact data structure.
+9. **Admin CLI: `beekeeper pair <name>` subcommand.** Operator runs `beekeeper pair "Alice's iPhone"` on the host; the command opens the local SQLite device registry directly (same path the server uses), creates a device row, and prints the pairing code to stdout in a human-readable format. No HTTP, no admin Bearer secret, no running server required — it's a local filesystem operation gated by Unix file permissions on `devices.db`. Output format:
+
+   ```
+   Created device: Alice's iPhone
+   Device ID:  abc123...
+   Pair code:  482917
+   Expires in: 10 minutes
+   ```
+
+   Runs concurrently with the server thanks to SQLite WAL mode. This replaces the "curl the admin API" workflow as the default operator UX.
+10. **Config: public port.** Default to **8420** in `beekeeper.yaml.example`. Not 3200 — that stays forever as Hive's loopback binding so there's no collision risk on boxes running both.
 
 ### `hive`
 
-1. **Delete `src/beekeeper/`.** Entire directory. Includes its tests, config, device registry, session manager, question relayer, tool guardian, file handler. These all live in `@keepur/beekeeper` now.
-2. **Delete Hive's device registry.** `src/channels/ws/device-registry.ts`, the `devices` Mongo collection, any admin REST endpoints under `/devices` in `src/channels/ws/ws-adapter.ts`. Hive is no longer a device registry.
-3. **Delete `/pair` from `ws-adapter.ts`.** Pairing is Beekeeper's job.
-4. **Bind Hive WS adapter to `127.0.0.1` only.** Previously `*:3200`. Update `WsAdapter` constructor + `createServer().listen(port, "127.0.0.1")`.
-5. **Accept `?internal=1` connections without token auth,** only when the socket's remote address is loopback. Read `deviceId` and `name` from query string instead of the device registry.
-6. **Register with Beekeeper on startup.** New module `src/beekeeper-client.ts` (or similar) that calls `POST http://127.0.0.1:<beekeeper>/internal/register-capability` on boot and retries on Beekeeper restart. Beekeeper port comes from config.
-7. **Delete `WS_ADMIN_SECRET` handling, device pairing code generation, JWT signing.** Gone.
-8. **Update deploy script and LaunchAgent.** Beekeeper must be running before Hive starts, or Hive must retry registration until Beekeeper is up. Hive's LaunchAgent gains a dependency on Beekeeper's LaunchAgent.
-9. **Remove `WS_PORT=3200` tunneling concerns.** The cloudflared tunnel (`dodi-shop.config.yml`) keeps `shop.dodihome.com` → `localhost:3200` only if we decide Hive stays on 3200 *internally*. Alternative: move the tunnel to point at Beekeeper's public port and retire 3200 externally. This spec recommends the latter — one hostname, one port, one service exposed.
+Changes split into two phases so the additive migration window (plan steps 3–6) stays functional. Both phases share a numbered change list; each item is tagged **[A]** (ships in Phase A, migration step 3) or **[B]** (ships in Phase B, migration step 7).
+
+**Phase A is additive:** Hive still accepts its old token-authed public connections on `*:3200` and its `/pair` endpoint still works for existing `dodi-shop-ios` installs. The Phase A changes coexist with the legacy code paths — `?internal=1` takes precedence when the flag is present, otherwise the legacy token check runs. This lets keepur-ios validate the unified pair + Team channel against real infrastructure before anything is destroyed.
+
+**Phase B is destructive** and ships after the cloudflared flip.
+
+1. **[A] Register with Beekeeper on an interval.** New module `src/beekeeper-client.ts` (or similar) calls `POST http://127.0.0.1:<beekeeper>/internal/register-capability` immediately on boot and then every 30s forever. Idempotent (Beekeeper overwrites on re-register). Makes process start order irrelevant and survives Beekeeper restarts without a notification channel. Beekeeper port comes from Hive's config.
+2. **[A] Accept `?internal=1` connections without token auth,** **only** when `req.socket.remoteAddress` ∈ {`127.0.0.1`, `::1`}. Read `deviceId` and `name` from query string instead of the device registry. **Security note:** this loopback check is load-bearing during Phase A, when Hive's WS adapter is still bound to `*:3200` and reachable from the public tunnel. A missing check would be a full auth bypass for the team channel. After Phase B rebinds to `127.0.0.1`, the OS-level bind is a second layer; the code-level check stays as defense-in-depth.
+3. **[B] Delete `src/beekeeper/`.** Entire directory. Includes its tests, config, device registry, session manager, question relayer, tool guardian, file handler. These all live in `@keepur/beekeeper` now.
+4. **[B] Delete Hive's device registry.** `src/channels/ws/device-registry.ts`, the `devices` Mongo collection, any admin REST endpoints under `/devices` in `src/channels/ws/ws-adapter.ts`. Hive is no longer a device registry.
+5. **[B] Delete `/pair` from `ws-adapter.ts`.** Pairing is Beekeeper's job.
+6. **[B] Bind Hive WS adapter to `127.0.0.1` only.** Previously `*:3200`. Update `WsAdapter` constructor + `createServer().listen(port, "127.0.0.1")`.
+7. **[B] Delete `WS_ADMIN_SECRET` handling, device pairing code generation, JWT signing.** Gone.
+8. **[B] Deploy script / LaunchAgent.** No strict dependency needed — Hive's 30s re-register loop absorbs any start-order skew. Just ensure both LaunchAgents are installed; order doesn't matter.
+9. **[ops, not code] Cloudflared tunnel.** `shop.dodihome.com` moves off Hive's 3200 and onto Beekeeper's public port (8420) at migration step 6. Hive's 3200 becomes loopback-only when Phase B lands. See §Migration plan for the cutover sequence.
 
 ### `keepur-ios`
 
-1. **Single pair screen,** posts to `https://<host>/pair` with code + name, stores one token in Keychain.
-2. **Read capabilities from pair response,** store alongside token. Use to decide which tabs to render.
-3. **Delete `TeamWebSocketManager.swift` as a separate URL/auth boundary.** Team and Beekeeper tabs share one underlying WebSocket (or two sockets to the same host with the same token — implementation detail). The `ws://hive.dodihome.com:3100` URL goes away entirely.
-4. **First-run UX:** prompt for server hostname (e.g. `shop.dodihome.com`), then pairing code. Persist hostname in Keychain.
-5. **`dodi-shop-ios` is unaffected** functionally — its existing pair flow continues to work because Beekeeper's `/pair` endpoint is API-compatible with Hive's current one. The capabilities field is additive; older clients ignore it.
+1. **Single pair screen,** posts to `https://<host>/pair` with code + name, stores token in Keychain.
+2. **Read capabilities from pair response** for the initial tab set. Refresh via `GET /capabilities` (Bearer token) on app foreground and on WS reconnect so Hive start/stop is reflected without re-pairing.
+3. **Delete `TeamWebSocketManager.swift` as a separate URL/auth boundary.** Both tabs connect to the same host with the same token. Implementation choice: either one shared socket with per-message routing, or two sockets to the same host distinguished by `?channel=team` vs the default. Spec recommends **two sockets** — simpler, lets the Team socket die independently when Hive is down without tearing down Beekeeper sessions. The legacy Hive WS URL goes away entirely.
+4. **First-run UX:** prompt for server hostname (e.g. `shop.dodihome.com`), then pairing code. Persist `{ hostname, token, deviceId, deviceName, capabilities }` as a single JSON blob in one Keychain slot — leaves room for a future multi-server list without a migration.
+5. **`dodi-shop-ios` is unaffected** functionally — its existing pair flow continues to work because Beekeeper's `/pair` endpoint is API-compatible with Hive's current one (`deviceName` field preserved). The `capabilities` field is additive; older clients ignore it. Existing `dodi-shop-ios` WS upgrades send no `channel` query param and land on the default `beekeeper` channel — no client change required.
 
 ### cloudflared / ops
 
-1. Update `~/.cloudflared/config.yml` so `shop.dodihome.com` routes to Beekeeper's public port instead of Hive's 3200. (Or: keep `shop.dodihome.com` for backward compatibility with `dodi-shop-ios` and add `beekeeper.dodihome.com` as the canonical new name — decide based on how many `dodi-shop-ios` installs exist.)
-2. Retire the `beekeeper.dodihome.com` → legacy-beekeeper mapping once clients have migrated.
+1. Add `beekeeper.dodihome.com` (or chosen new hostname) → `localhost:8420` during the additive phase of migration (step 2).
+2. At migration step 6, flip `shop.dodihome.com` from `localhost:3200` to `localhost:8420`. Both hostnames now resolve to Beekeeper; `dodi-shop-ios` users keep their existing URL forever. See Open Q #2 for the long-term hostname strategy.
+3. Retire any legacy `beekeeper.dodihome.com` → legacy-beekeeper (Hive's old pre-extraction Beekeeper) mapping once clients have migrated.
 
 ## Migration plan
 
 Ordered to avoid downtime on `dodi-shop-ios` (which real users depend on):
 
-1. **Re-sync beekeeper from hive/src/beekeeper.** Get parity with current in-hive Beekeeper behavior including recent broadcast commit.
-2. **Deploy beekeeper as a sibling process** on the mac mini, on a new port. Expose via a new cloudflared hostname. Verify with a test device.
-3. **Add capability registration to Hive (additive).** Hive registers with beekeeper on startup but keeps its own WS adapter on `*:3200` and its own device registry. Both old and new pair flows work concurrently.
+1. **Re-sync beekeeper from hive/src/beekeeper.** ✅ Done (`dac70b7`, `2220d58`).
+2. **Deploy beekeeper as a sibling process** on the mac mini, on port **8420**. Expose via a new cloudflared hostname (e.g. `beekeeper.dodihome.com`). Verify with a test device.
+3. **Ship Hive Phase A (additive).** Hive registers with Beekeeper on a 30s interval AND accepts `?internal=1` loopback connections without token auth. Hive keeps its own public WS adapter on `*:3200`, its own device registry, and its own `/pair` endpoint. Both old and new pair flows work concurrently. This is the window where keepur-ios can validate the Team channel against Beekeeper's proxy end-to-end.
 4. **Update keepur-ios** to pair against the new beekeeper hostname. Ship to TestFlight. Verify both Team and Beekeeper tabs work through the unified token.
-5. **Migrate dodi-shop-ios** to pair against the new beekeeper hostname on next release.
-6. **Flip cloudflared:** `shop.dodihome.com` now routes to beekeeper's public port, not Hive's 3200.
-7. **Delete Hive's `src/beekeeper/`, device registry, pair endpoints, admin secret.** Rebind WS adapter to `127.0.0.1`.
-8. **Delete legacy `beekeeper.dodihome.com` tunnel entry** if it existed.
+5. **Migrate dodi-shop-ios** to pair against the new beekeeper hostname on next App Store release. **Gate:** do not proceed to step 6 until the new `dodi-shop-ios` build is on ≥95% of active installs (checked via App Store Connect analytics). Older installs still hitting the Hive pair flow must have a migration path or be explicitly drained first.
+6. **Flip cloudflared:** `shop.dodihome.com` now routes to beekeeper's public port (8420), not Hive's 3200. At this point, the old Hive-served `/pair` is no longer externally reachable.
+7. **Ship Hive Phase B (destructive).** Delete `src/beekeeper/`, device registry, `/pair`, admin secret. Rebind WS adapter to `127.0.0.1`. No LaunchAgent dependency needed — Hive's 30s re-register loop handles start-order.
+8. **Delete legacy `beekeeper.dodihome.com` → legacy-beekeeper tunnel entry** if it existed.
 
-Steps 1–4 are additive and reversible. Steps 5–8 are one-way but scoped to a single deploy each.
+Steps 1–4 are additive and reversible. Steps 5–8 are one-way but scoped to a single deploy each. Step 5's gate is the only time-bound one — everything else can proceed as soon as the previous step is verified.
+
+## Resolved decisions
+
+- **Public port:** **8420**. Hive's 3200 stays forever as a loopback-only binding; no external collision.
+- **Pair code UX:** CLI-only for v1. Defer web admin UI until there's a second non-terminal user.
+- **Broadcast-to-all-devices** (commit `abd616e`): already landed in `@keepur/beekeeper` (`dac70b7`).
+- **Capabilities in JWT:** no — served via `GET /capabilities` instead (see §Pair flow).
+- **Channel selection:** query-string `?channel=`, not an in-band join frame (back-compat with `dodi-shop-ios`).
+- **Hive admin operations** (agent CRUD, model overrides): unchanged. They stay inside Hive, triggered by agents or Claude Code CLI sessions via MCP. This spec does not surface any admin UI to Keepur.
 
 ## Open questions
 
-1. **Beekeeper's public port.** Does it keep `3200` (inheriting from Hive's retired WS adapter) or pick a new canonical port? Leaning: pick a new one, leave 3200 to Hive's loopback binding forever.
-2. **Pair code UX.** Today it's CLI-only. Is a minimal web UI at `https://<host>/admin` worth building in v1, or defer until there's a second user who isn't on the terminal?
-3. **Multi-instance on one mac mini** (dodi + personal). Current thinking: each Hive instance has its own Beekeeper, separate hostnames, separate tunnels. Confirm before deploying personal instance behind this architecture.
-4. **Broadcast-to-all-devices** (commit `abd616e`). This currently lives in Hive's beekeeper copy. Confirm it moves cleanly into `@keepur/beekeeper`.
-5. **Hive admin operations** (agent CRUD, model overrides) currently accessible via admin MCP tools run inside Hive. No change needed — they stay inside Hive, triggered by agents or Claude Code CLI sessions via MCP. This spec does not surface any admin UI to Keepur.
+1. **Multi-instance on one mac mini** (dodi + personal). Current thinking: each Hive instance has its own Beekeeper, separate hostnames, separate tunnels, separate ports. Confirm before deploying a personal instance behind this architecture.
+2. **Cloudflared cutover hostname strategy:** do we reuse `shop.dodihome.com` after the flip (keeps existing `dodi-shop-ios` URLs working forever) or retire it in favor of `beekeeper.dodihome.com` once `dodi-shop-ios` has fully migrated? Leaning: keep `shop.dodihome.com` as an alias indefinitely — cheap and avoids a second forced client migration.
 
 ## References
 
@@ -185,4 +228,4 @@ Steps 1–4 are additive and reversible. Steps 5–8 are one-way but scoped to a
 - Hive WS adapter: `hive/src/channels/ws/ws-adapter.ts`
 - Hive beekeeper (to be deleted): `hive/src/beekeeper/`
 - dodi-shop-ios pair client: `dodi-shop-ios/DodiShop/Views/PairingView.swift`, `dodi-shop-ios/DodiShop/Managers/WebSocketManager.swift`
-- keepur-ios Team client: `keepur-ios/Managers/TeamWebSocketManager.swift`
+- keepur-ios Team client: `keepur-ios/Managers/TeamWebSocketManager.swift` (currently points at Hive WS on port 3200; goes away in this spec)
