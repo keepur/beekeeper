@@ -11,6 +11,7 @@ import { QuestionRelayer } from "./question-relayer.js";
 import { SessionManager } from "./session-manager.js";
 import { DeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
 import { CapabilityManifest } from "./capabilities.js";
+import { proxyTeamConnection } from "./team-proxy.js";
 import { validatePath } from "./path-utils.js";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -35,8 +36,11 @@ async function main(): Promise<void> {
   // TODO(KPR-5 step 7): wire startHealthLoop()/stopHealthLoop() into startup/shutdown.
   const capabilities = new CapabilityManifest();
 
-  // Track connected devices — multiple connections per device allowed
-  const connectedClients = new Map<string, Set<WebSocket>>();
+  // Track connected devices — multiple connections per device allowed.
+  // Each entry tracks both the client socket and, for team-channel connections,
+  // the upstream hive proxy socket so revocation can close both sides.
+  type ClientConn = { clientWs: WebSocket; upstreamWs?: WebSocket; dispose?: () => void };
+  const connectedClients = new Map<string, Set<ClientConn>>();
 
   // Set guardian delegate once — SessionManager handles broadcast/buffering
   guardian.setSendDelegate((msg) => sessionManager.send(msg));
@@ -404,11 +408,23 @@ async function main(): Promise<void> {
             res.end(JSON.stringify({ error: "Device not found or already inactive" }));
             return;
           }
-          // Force-disconnect all connections for this device
-          const deviceWsSet = connectedClients.get(deviceId);
-          if (deviceWsSet) {
-            for (const clientWs of deviceWsSet) {
-              clientWs.close(1000, "Device deactivated");
+          // Force-disconnect all connections for this device (both client
+          // sockets and any upstream team-channel proxy sockets).
+          const deviceConnSet = connectedClients.get(deviceId);
+          if (deviceConnSet) {
+            for (const conn of deviceConnSet) {
+              try {
+                conn.clientWs.close(1000, "Device deactivated");
+              } catch (err) {
+                log.warn("Failed to close client ws on revoke", { error: String(err) });
+              }
+              if (conn.upstreamWs) {
+                try {
+                  conn.upstreamWs.close(1000, "Device deactivated");
+                } catch (err) {
+                  log.warn("Failed to close upstream ws on revoke", { error: String(err) });
+                }
+              }
             }
           }
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -503,22 +519,71 @@ async function main(): Promise<void> {
   wss.on("connection", (ws: WebSocket, device: BeekeeperDevice, channel: "beekeeper" | "team" = "beekeeper") => {
     log.info("Client connected", { deviceId: device._id, name: device.name, channel });
 
-    // TODO(KPR-5 step 4/5): team-channel handling is incomplete. Step 4 will
-    // hook the hive proxy here and Step 5 will refactor connection tracking.
-    // Until then, reject team-channel upgrades cleanly so the socket isn't
-    // mistakenly fed into the beekeeper message loop below.
-    if (channel === "team") {
-      log.warn("team channel not yet implemented — closing", { deviceId: device._id });
-      ws.close(1011, "not yet implemented");
-      return;
-    }
-
+    // Track this connection (client socket + optional upstream proxy socket).
+    const conn: ClientConn = { clientWs: ws };
     let clientSet = connectedClients.get(device._id);
     if (!clientSet) {
       clientSet = new Set();
       connectedClients.set(device._id, clientSet);
     }
-    clientSet.add(ws);
+    clientSet.add(conn);
+
+    // Team channel: transparent proxy to Hive. No session manager, no
+    // beekeeper message loop — just wire up the proxy and install lifecycle
+    // hooks to keep connectedClients consistent.
+    if (channel === "team") {
+      const hiveEntry = capabilities.get("hive");
+      if (!hiveEntry) {
+        // Defensive: upgrade handler already gates on this, but if hive
+        // dropped between upgrade and connection, close cleanly.
+        log.warn("team channel connection with no hive capability — closing", { deviceId: device._id });
+        ws.close(1011, "hive-unavailable");
+        clientSet.delete(conn);
+        if (clientSet.size === 0) connectedClients.delete(device._id);
+        return;
+      }
+
+      try {
+        const handle = proxyTeamConnection(ws, device, hiveEntry);
+        conn.upstreamWs = handle.upstreamWs;
+        conn.dispose = handle.dispose;
+      } catch (err) {
+        log.error("Failed to open team proxy", { deviceId: device._id, error: String(err) });
+        try {
+          ws.close(1011, "hive-unavailable");
+        } catch { /* ignore */ }
+        clientSet.delete(conn);
+        if (clientSet.size === 0) connectedClients.delete(device._id);
+        return;
+      }
+
+      ws.on("close", () => {
+        const closeSet = connectedClients.get(device._id);
+        if (closeSet) {
+          closeSet.delete(conn);
+          if (closeSet.size === 0) connectedClients.delete(device._id);
+        }
+        // Belt-and-suspenders: the proxy's own close handler already cascades,
+        // but explicitly closing here is idempotent and defends against leaks.
+        if (conn.upstreamWs && conn.upstreamWs.readyState <= 1) {
+          try {
+            conn.upstreamWs.close(1000, "client closed");
+          } catch (err) {
+            log.warn("Failed to close upstream ws on client close", { error: String(err) });
+          }
+        }
+        let totalConnections = 0;
+        for (const s of connectedClients.values()) totalConnections += s.size;
+        log.info("Team client disconnected", { deviceId: device._id, remainingClients: totalConnections });
+      });
+
+      ws.on("error", (err) => {
+        log.error("Team WebSocket error", { error: String(err) });
+      });
+
+      return;
+    }
+
     sessionManager.addClient(device._id, ws);
 
     // Update lastSeenAt
@@ -738,7 +803,7 @@ async function main(): Promise<void> {
     ws.on("close", () => {
       const closeSet = connectedClients.get(device._id);
       if (closeSet) {
-        closeSet.delete(ws);
+        closeSet.delete(conn);
         if (closeSet.size === 0) {
           connectedClients.delete(device._id);
         }
