@@ -10,6 +10,7 @@ import { ToolGuardian } from "./tool-guardian.js";
 import { QuestionRelayer } from "./question-relayer.js";
 import { SessionManager } from "./session-manager.js";
 import { DeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
+import { CapabilityManifest } from "./capabilities.js";
 import { validatePath } from "./path-utils.js";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -29,6 +30,10 @@ async function main(): Promise<void> {
   const dbPath = join(config.dataDir, "devices.db");
   const deviceRegistry = new DeviceRegistry(dbPath, config.jwtSecret, config.dataDir);
   deviceRegistry.open();
+
+  // Capability manifest — populated by sibling processes via /internal/register-capability.
+  // TODO(KPR-5 step 7): wire startHealthLoop()/stopHealthLoop() into startup/shutdown.
+  const capabilities = new CapabilityManifest();
 
   // Track connected devices — multiple connections per device allowed
   const connectedClients = new Map<string, Set<WebSocket>>();
@@ -117,10 +122,80 @@ async function main(): Promise<void> {
             token: result.token,
             deviceId: result.device._id,
             deviceName: result.device.name,
+            capabilities: capabilities.list(),
           }),
         );
       } catch (err) {
         log.error("Pair endpoint error", { error: String(err) });
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+      return;
+    }
+
+    // POST /internal/register-capability (loopback only) — sibling processes
+    // announce their local ws/health URLs to beekeeper.
+    if (req.method === "POST" && url.pathname === "/internal/register-capability") {
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      if (!loopback) {
+        log.warn("Rejected non-loopback /internal/register-capability", { remote: remote ?? "unknown" });
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Forbidden" }));
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        let parsed: { name?: unknown; localWsUrl?: unknown; healthUrl?: unknown };
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON" }));
+          return;
+        }
+        const { name, localWsUrl, healthUrl } = parsed;
+        if (
+          typeof name !== "string" || !name ||
+          typeof localWsUrl !== "string" || !localWsUrl ||
+          typeof healthUrl !== "string" || !healthUrl
+        ) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({ error: "Missing or invalid fields: name, localWsUrl, healthUrl must be non-empty strings" }),
+          );
+          return;
+        }
+        try {
+          capabilities.register({ name, localWsUrl, healthUrl });
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        log.error("Register capability error", { error: String(err) });
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+      return;
+    }
+
+    // GET /capabilities (Bearer JWT) — list capability names visible to this device.
+    if (req.method === "GET" && url.pathname === "/capabilities") {
+      try {
+        const device = verifyDeviceToken(req);
+        if (!device) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ capabilities: capabilities.list() }));
+      } catch (err) {
+        log.error("GET /capabilities error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Internal server error" }));
       }
