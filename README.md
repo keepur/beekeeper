@@ -45,18 +45,20 @@ export BEEKEEPER_DATA_DIR="/path/to/data"          # Default: ~/.beekeeper
 ```bash
 beekeeper
 # Or with options:
-beekeeper --port 3099 --model claude-opus-4-6
+beekeeper --port 8420 --model claude-opus-4-6
 ```
 
-The server listens on the configured port (default `3099`). Health check: `GET http://localhost:3099/health`
+The server listens on the configured port (default `8420`). Health check: `GET http://localhost:8420/health`
+
+**Why 8420?** 8420 is the shared public-facing port that fronts both Beekeeper and (optionally) Hive. Clients open one socket to Beekeeper and pick a channel via the `?channel=` query param (`beekeeper` is the default; `team` proxies to a registered Hive). Hive's own loopback binding stays on `127.0.0.1:3200` forever, so a box running both has no port collision. Cloudflared tunnels should point at `localhost:8420`.
 
 ## Configuration Reference
 
 ### beekeeper.yaml
 
 ```yaml
-# WebSocket server port (default: 3099)
-port: 3099
+# WebSocket server port (default: 8420)
+port: 8420
 
 # Claude model to use for sessions (default: claude-opus-4-6)
 model: claude-opus-4-6
@@ -97,7 +99,7 @@ Devices authenticate with JWT tokens. The pairing process is two-step:
 ### Step 1: Admin creates a pairing code
 
 ```bash
-curl -X POST http://localhost:3099/devices \
+curl -X POST http://localhost:8420/devices \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"name": "iPhone"}'
@@ -117,7 +119,7 @@ Response:
 
 From the device client:
 ```bash
-curl -X POST http://beekeeper-server:3099/pair \
+curl -X POST http://beekeeper-server:8420/pair \
   -H "Content-Type: application/json" \
   -d '{"code": "ABCD1234", "name": "My iPhone"}'
 ```
@@ -133,7 +135,7 @@ Response:
 
 The device stores the token and passes it on every WebSocket connection:
 ```
-ws://beekeeper-server:3099/?token=eyJhbGc...
+ws://beekeeper-server:8420/?token=eyJhbGc...
 ```
 
 Or via the `Authorization` header:
@@ -162,6 +164,22 @@ Beekeeper automatically discovers plugins from two sources:
    ```
 
 Plugins are loaded into each session, extending available tools and commands. See the Claude Code SDK docs for plugin development.
+
+## Running alongside Hive
+
+Beekeeper is the single public-facing gateway on a box that may also run [Hive](https://github.com/keepur/hive). There is **no manual wiring** between the two processes — Hive registers itself with Beekeeper on startup.
+
+**How it works:**
+
+1. Beekeeper listens on its public port (default `8420`). Hive binds its WebSocket adapter to `127.0.0.1:3200` — loopback only.
+2. On boot (and every 30s thereafter), Hive calls `POST http://127.0.0.1:8420/internal/register-capability` with its `localWsUrl` and `healthUrl`. The loopback check is the auth.
+3. Beekeeper stores the registration in memory and health-checks it every 10s. Two consecutive failures drop the entry.
+4. Clients connect to Beekeeper with `wss://<host>/?token=<jwt>&channel=team`. Beekeeper proxies the socket to Hive's loopback WS. Omitting `channel` (or passing `channel=beekeeper`) routes to Beekeeper's own Claude Code session manager.
+5. If Hive is not currently registered, `channel=team` upgrades are rejected with `503 hive-unavailable` and Hive does not appear in `GET /capabilities`.
+
+**Start order is irrelevant.** Beekeeper can start before or after Hive; the 30s re-registration loop on Hive's side makes the system self-heal across restarts of either process. Nothing in `beekeeper.yaml` needs to mention Hive.
+
+**Beekeeper-only boxes** (e.g. a dev laptop with Claude Code sessions but no Hive) just see `{ "capabilities": ["beekeeper"] }` forever. No extra configuration required.
 
 ## macOS LaunchAgent Setup
 
@@ -222,23 +240,51 @@ Without these, Beekeeper accepts file uploads but returns minimal metadata. With
 
 **GET /me** — Get current device info
 ```bash
-curl http://localhost:3099/me \
+curl http://localhost:8420/me \
   -H "Authorization: Bearer $DEVICE_TOKEN"
 ```
 
 **PUT /me** — Update device name
 ```bash
-curl -X PUT http://localhost:3099/me \
+curl -X PUT http://localhost:8420/me \
   -H "Authorization: Bearer $DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "New Name"}'
 ```
 
+**GET /capabilities** — List runtime capabilities available on this server
+```bash
+curl http://localhost:8420/capabilities \
+  -H "Authorization: Bearer $DEVICE_TOKEN"
+```
+
+Response:
+```json
+{ "capabilities": ["beekeeper", "hive"] }
+```
+
+`beekeeper` is always first and always present. Additional names (e.g. `hive`) appear when a sibling process has registered itself via `/internal/register-capability` and is passing health checks. Clients should call this on app foreground and on WebSocket reconnect so the UI tracks Hive availability without re-pairing. The same list is also returned in the `POST /pair` response body as `capabilities`, so first-run clients have it immediately.
+
+### Internal API (Loopback Only)
+
+**POST /internal/register-capability** — Register a sibling capability (e.g. Hive)
+```bash
+curl -X POST http://127.0.0.1:8420/internal/register-capability \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "hive",
+    "localWsUrl": "ws://127.0.0.1:3200",
+    "healthUrl": "http://127.0.0.1:3200/health"
+  }'
+```
+
+Auth is enforced by loopback only: the endpoint returns `403` unless `remoteAddress` is `127.0.0.1` or `::1`. No bearer token is required. The call is idempotent — re-registering overwrites the existing entry and resets the failure counter. Beekeeper polls `healthUrl` every 10s and drops the entry after two consecutive failures, so siblings should re-register on a short interval (Hive uses 30s) to survive Beekeeper restarts.
+
 ### Admin API (Bearer Token)
 
 **POST /devices** — Create new device and pairing code
 ```bash
-curl -X POST http://localhost:3099/devices \
+curl -X POST http://localhost:8420/devices \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"name": "Device Name"}'
@@ -246,19 +292,19 @@ curl -X POST http://localhost:3099/devices \
 
 **GET /devices** — List all devices with status
 ```bash
-curl http://localhost:3099/devices \
+curl http://localhost:8420/devices \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET"
 ```
 
 **GET /devices/:id** — Get device details
 ```bash
-curl http://localhost:3099/devices/device-uuid \
+curl http://localhost:8420/devices/device-uuid \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET"
 ```
 
 **PUT /devices/:id** — Update device name
 ```bash
-curl -X PUT http://localhost:3099/devices/device-uuid \
+curl -X PUT http://localhost:8420/devices/device-uuid \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"name": "New Name"}'
@@ -266,13 +312,13 @@ curl -X PUT http://localhost:3099/devices/device-uuid \
 
 **DELETE /devices/:id** — Deactivate device
 ```bash
-curl -X DELETE http://localhost:3099/devices/device-uuid \
+curl -X DELETE http://localhost:8420/devices/device-uuid \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET"
 ```
 
 **POST /devices/:id/refresh-code** — Generate new pairing code
 ```bash
-curl -X POST http://localhost:3099/devices/device-uuid/refresh-code \
+curl -X POST http://localhost:8420/devices/device-uuid/refresh-code \
   -H "Authorization: Bearer $BEEKEEPER_ADMIN_SECRET"
 ```
 
@@ -280,7 +326,7 @@ curl -X POST http://localhost:3099/devices/device-uuid/refresh-code \
 
 **GET /health** — Health check
 ```bash
-curl http://localhost:3099/health
+curl http://localhost:8420/health
 ```
 
 ## Architecture
