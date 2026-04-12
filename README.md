@@ -183,6 +183,25 @@ View logs:
 log stream --predicate 'process == "beekeeper"' --level debug
 ```
 
+## Pairing a Device
+
+To create a new device and generate a one-time pairing code from the command line:
+
+```bash
+beekeeper pair "My iPhone"
+```
+
+Output:
+
+```
+Created device: My iPhone
+Device ID:  <uuid>
+Pair code:  123456
+Expires in: 10 minutes
+```
+
+The pair code is valid for 10 minutes. Enter it in the Keepur client to complete pairing. This command opens the device registry directly (SQLite WAL mode) and is safe to run while the Beekeeper server is running.
+
 ## Optional File Processing Dependencies
 
 For rich file content extraction (PDF, Word, Excel, images), install optional dependencies:

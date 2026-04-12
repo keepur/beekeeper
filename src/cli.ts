@@ -16,6 +16,38 @@ switch (command) {
     uninstall();
     break;
   }
+  case "pair": {
+    const name = process.argv.slice(3).join(" ").trim();
+    if (!name) {
+      console.error("Usage: beekeeper pair <device-name>");
+      process.exit(1);
+    }
+    let deviceRegistry: import("./device-registry.js").DeviceRegistry | undefined;
+    try {
+      const { loadConfig } = await import("./config.js");
+      const { DeviceRegistry } = await import("./device-registry.js");
+      const config = loadConfig();
+      const dbPath = join(config.dataDir, "devices.db");
+      deviceRegistry = new DeviceRegistry(dbPath, config.jwtSecret, config.dataDir);
+      deviceRegistry.open();
+      const device = deviceRegistry.createDevice(name);
+      console.log(`Created device: ${device.name}`);
+      console.log(`Device ID:  ${device._id}`);
+      console.log(`Pair code:  ${device.pairingCode}`);
+      console.log(`Expires in: 10 minutes`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`beekeeper pair failed: ${msg}`);
+      process.exit(1);
+    } finally {
+      try {
+        deviceRegistry?.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+    break;
+  }
   case "migrate": {
     const flag = process.argv[3];
     if (flag !== "--from-mongo") {
