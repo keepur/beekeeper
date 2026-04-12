@@ -82,14 +82,48 @@ describe("loadConfig", () => {
     expect(() => loadConfig()).toThrow("Missing required env var: BEEKEEPER_ADMIN_SECRET");
   });
 
-  it("falls back to default port (3099) when port is missing", () => {
+  it("falls back to default port (8420) when port is missing", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("yaml content");
     mockParseYaml.mockReturnValue({});
 
     const config = loadConfig();
 
-    expect(config.port).toBe(3099);
+    expect(config.port).toBe(8420);
+  });
+
+  it("falls back to default capabilitiesHealthIntervalMs (10000) when missing", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({});
+
+    const config = loadConfig();
+
+    expect(config.capabilitiesHealthIntervalMs).toBe(10000);
+  });
+
+  it("falls back to default capabilitiesFailureThreshold (2) when missing", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({});
+
+    const config = loadConfig();
+
+    expect(config.capabilitiesFailureThreshold).toBe(2);
+  });
+
+  it("parses capabilities_health_interval_ms and capabilities_failure_threshold from YAML", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      capabilities_health_interval_ms: 250,
+      capabilities_failure_threshold: 5,
+    });
+
+    const config = loadConfig();
+
+    expect(config.capabilitiesHealthIntervalMs).toBe(250);
+    expect(config.capabilitiesFailureThreshold).toBe(5);
   });
 
   it("falls back to default model when model is missing", () => {

@@ -32,6 +32,8 @@ function makeConfig(overrides: Partial<BeekeeperConfig> = {}): BeekeeperConfig {
     jwtSecret: "test-jwt-secret",
     adminSecret: "test-admin-secret",
     dataDir: "/tmp/beekeeper-test-data",
+    capabilitiesHealthIntervalMs: 10000,
+    capabilitiesFailureThreshold: 2,
     ...overrides,
   };
 }

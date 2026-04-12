@@ -1,6 +1,15 @@
-port: 3099
+# Public HTTP/WS port. Default 8420 — the shared public-facing port that
+# fronts both Beekeeper and (optionally) Hive via the ?channel= query param.
+# Hive's own loopback binding stays on 3200 forever; they do not collide.
+port: 8420
 model: claude-opus-4-6
 default_workspace: my-project
+
+# Capability manifest health-check tuning (optional; defaults shown).
+# Beekeeper polls each registered capability's healthUrl on this interval,
+# and drops the capability after this many consecutive failures.
+# capabilities_health_interval_ms: 10000
+# capabilities_failure_threshold: 2
 
 workspaces:
   my-project: ~/code/my-project

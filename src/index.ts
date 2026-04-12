@@ -10,6 +10,8 @@ import { ToolGuardian } from "./tool-guardian.js";
 import { QuestionRelayer } from "./question-relayer.js";
 import { SessionManager } from "./session-manager.js";
 import { DeviceRegistry, type BeekeeperDevice } from "./device-registry.js";
+import { CapabilityManifest } from "./capabilities.js";
+import { proxyTeamConnection } from "./team-proxy.js";
 import { validatePath } from "./path-utils.js";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,8 +32,14 @@ async function main(): Promise<void> {
   const deviceRegistry = new DeviceRegistry(dbPath, config.jwtSecret, config.dataDir);
   deviceRegistry.open();
 
-  // Track connected devices — multiple connections per device allowed
-  const connectedClients = new Map<string, Set<WebSocket>>();
+  // Capability manifest — populated by sibling processes via /internal/register-capability.
+  const capabilities = new CapabilityManifest();
+
+  // Track connected devices — multiple connections per device allowed.
+  // Each entry tracks both the client socket and, for team-channel connections,
+  // the upstream hive proxy socket so revocation can close both sides.
+  type ClientConn = { clientWs: WebSocket; upstreamWs?: WebSocket; dispose?: () => void };
+  const connectedClients = new Map<string, Set<ClientConn>>();
 
   // Set guardian delegate once — SessionManager handles broadcast/buffering
   guardian.setSendDelegate((msg) => sessionManager.send(msg));
@@ -117,10 +125,80 @@ async function main(): Promise<void> {
             token: result.token,
             deviceId: result.device._id,
             deviceName: result.device.name,
+            capabilities: capabilities.list(),
           }),
         );
       } catch (err) {
         log.error("Pair endpoint error", { error: String(err) });
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+      return;
+    }
+
+    // POST /internal/register-capability (loopback only) — sibling processes
+    // announce their local ws/health URLs to beekeeper.
+    if (req.method === "POST" && url.pathname === "/internal/register-capability") {
+      const remote = req.socket.remoteAddress;
+      const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+      if (!loopback) {
+        log.warn("Rejected non-loopback /internal/register-capability", { remote: remote ?? "unknown" });
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Forbidden" }));
+        return;
+      }
+      try {
+        const body = await readBody(req);
+        let parsed: { name?: unknown; localWsUrl?: unknown; healthUrl?: unknown };
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid JSON" }));
+          return;
+        }
+        const { name, localWsUrl, healthUrl } = parsed;
+        if (
+          typeof name !== "string" || !name ||
+          typeof localWsUrl !== "string" || !localWsUrl ||
+          typeof healthUrl !== "string" || !healthUrl
+        ) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({ error: "Missing or invalid fields: name, localWsUrl, healthUrl must be non-empty strings" }),
+          );
+          return;
+        }
+        try {
+          capabilities.register({ name, localWsUrl, healthUrl });
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        log.error("Register capability error", { error: String(err) });
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Internal server error" }));
+      }
+      return;
+    }
+
+    // GET /capabilities (Bearer JWT) — list capability names visible to this device.
+    if (req.method === "GET" && url.pathname === "/capabilities") {
+      try {
+        const device = verifyDeviceToken(req);
+        if (!device) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ capabilities: capabilities.list() }));
+      } catch (err) {
+        log.error("GET /capabilities error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Internal server error" }));
       }
@@ -329,11 +407,24 @@ async function main(): Promise<void> {
             res.end(JSON.stringify({ error: "Device not found or already inactive" }));
             return;
           }
-          // Force-disconnect all connections for this device
-          const deviceWsSet = connectedClients.get(deviceId);
-          if (deviceWsSet) {
-            for (const clientWs of deviceWsSet) {
-              clientWs.close(1000, "Device deactivated");
+          // Force-disconnect all connections for this device (both client
+          // sockets and any upstream team-channel proxy sockets).
+          const deviceConnSet = connectedClients.get(deviceId);
+          if (deviceConnSet) {
+            for (const conn of deviceConnSet) {
+              try {
+                conn.clientWs.close(1000, "Device deactivated");
+              } catch (err) {
+                log.warn("Failed to close client ws on revoke", { error: String(err) });
+              }
+              if (conn.upstreamWs) {
+                try {
+                  conn.upstreamWs.close(1000, "Device deactivated");
+                } catch (err) {
+                  log.warn("Failed to close upstream ws on revoke", { error: String(err) });
+                }
+              }
+              conn.dispose?.();
             }
           }
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -397,8 +488,24 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Parse channel query param — defaults to "beekeeper" for backwards compat.
+      const channel = url.searchParams.get("channel") ?? "beekeeper";
+      if (channel !== "beekeeper" && channel !== "team") {
+        log.warn("WebSocket upgrade rejected — invalid channel", { channel });
+        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      if (channel === "team" && capabilities.get("hive") === undefined) {
+        log.warn("WebSocket upgrade rejected — hive-unavailable", { deviceId: device._id });
+        socket.write("HTTP/1.1 503 hive-unavailable\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
       wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, device);
+        wss.emit("connection", ws, device, channel);
       });
     } catch (err) {
       log.error("WebSocket upgrade error", { error: String(err) });
@@ -409,15 +516,74 @@ async function main(): Promise<void> {
 
   // --- Multi-client connection management ---
 
-  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice) => {
-    log.info("Client connected", { deviceId: device._id, name: device.name });
+  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice, channel: "beekeeper" | "team" = "beekeeper") => {
+    log.info("Client connected", { deviceId: device._id, name: device.name, channel });
 
+    // Track this connection (client socket + optional upstream proxy socket).
+    const conn: ClientConn = { clientWs: ws };
     let clientSet = connectedClients.get(device._id);
     if (!clientSet) {
       clientSet = new Set();
       connectedClients.set(device._id, clientSet);
     }
-    clientSet.add(ws);
+    clientSet.add(conn);
+
+    // Team channel: transparent proxy to Hive. No session manager, no
+    // beekeeper message loop — just wire up the proxy and install lifecycle
+    // hooks to keep connectedClients consistent.
+    if (channel === "team") {
+      const hiveEntry = capabilities.get("hive");
+      if (!hiveEntry) {
+        // Defensive: upgrade handler already gates on this, but if hive
+        // dropped between upgrade and connection, close cleanly.
+        log.warn("team channel connection with no hive capability — closing", { deviceId: device._id });
+        ws.close(1011, "hive-unavailable");
+        clientSet.delete(conn);
+        if (clientSet.size === 0) connectedClients.delete(device._id);
+        return;
+      }
+
+      try {
+        const handle = proxyTeamConnection(ws, device, hiveEntry);
+        conn.upstreamWs = handle.upstreamWs;
+        conn.dispose = handle.dispose;
+      } catch (err) {
+        log.error("Failed to open team proxy", { deviceId: device._id, error: String(err) });
+        try {
+          ws.close(1011, "hive-unavailable");
+        } catch { /* ignore */ }
+        clientSet.delete(conn);
+        if (clientSet.size === 0) connectedClients.delete(device._id);
+        return;
+      }
+
+      ws.on("close", () => {
+        const closeSet = connectedClients.get(device._id);
+        if (closeSet) {
+          closeSet.delete(conn);
+          if (closeSet.size === 0) connectedClients.delete(device._id);
+        }
+        // Belt-and-suspenders: the proxy's own close handler already cascades,
+        // but explicitly closing here is idempotent and defends against leaks.
+        if (conn.upstreamWs && conn.upstreamWs.readyState <= 1) {
+          try {
+            conn.upstreamWs.close(1000, "client closed");
+          } catch (err) {
+            log.warn("Failed to close upstream ws on client close", { error: String(err) });
+          }
+        }
+        let totalConnections = 0;
+        for (const s of connectedClients.values()) totalConnections += s.size;
+        log.info("Team client disconnected", { deviceId: device._id, remainingClients: totalConnections });
+      });
+
+      ws.on("error", (err) => {
+        log.error("Team WebSocket error", { error: String(err) });
+      });
+
+      return;
+    }
+
     sessionManager.addClient(device._id, ws);
 
     // Update lastSeenAt
@@ -637,7 +803,7 @@ async function main(): Promise<void> {
     ws.on("close", () => {
       const closeSet = connectedClients.get(device._id);
       if (closeSet) {
-        closeSet.delete(ws);
+        closeSet.delete(conn);
         if (closeSet.size === 0) {
           connectedClients.delete(device._id);
         }
@@ -655,6 +821,11 @@ async function main(): Promise<void> {
   });
 
   // --- Start ---
+  capabilities.startHealthLoop(
+    config.capabilitiesHealthIntervalMs,
+    config.capabilitiesFailureThreshold,
+  );
+
   server.listen(config.port, () => {
     log.info("Beekeeper is running", { port: config.port });
   });
@@ -676,6 +847,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     log.info("Shutting down");
     clearInterval(reapTimer);
+    capabilities.stopHealthLoop();
     sessionManager.persistSessions();
     await sessionManager.stopAll();
     wss.close();
