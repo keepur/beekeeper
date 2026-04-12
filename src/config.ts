@@ -90,7 +90,7 @@ export function loadConfig(): BeekeeperConfig {
   });
 
   return {
-    port: (raw.port as number) ?? 3099,
+    port: (raw.port as number) ?? 8420,
     model: (raw.model as string) ?? "claude-opus-4-6",
     confirmOperations: (raw.confirm_operations as string[]) ?? [
       "git push --force",
@@ -107,5 +107,7 @@ export function loadConfig(): BeekeeperConfig {
     defaultWorkspace: raw.default_workspace as string | undefined,
     workspaces: raw.workspaces as Record<string, string> | undefined,
     plugins: allPlugins,
+    capabilitiesHealthIntervalMs: (raw.capabilities_health_interval_ms as number) ?? 10000,
+    capabilitiesFailureThreshold: (raw.capabilities_failure_threshold as number) ?? 2,
   };
 }

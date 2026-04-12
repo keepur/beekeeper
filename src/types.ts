@@ -53,4 +53,6 @@ export interface BeekeeperConfig {
   defaultWorkspace?: string;
   workspaces?: Record<string, string>;
   plugins?: string[];
+  capabilitiesHealthIntervalMs: number;
+  capabilitiesFailureThreshold: number;
 }

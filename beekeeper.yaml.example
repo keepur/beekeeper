@@ -1,4 +1,4 @@
-port: 3099
+port: 8420
 model: claude-opus-4-6
 default_workspace: my-project
 
