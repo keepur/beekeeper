@@ -462,4 +462,27 @@ describe("proxyTeamConnection", () => {
     expect(hive.lastInternalUrl).toContain("&origin=weird%20slug%2F1");
     outgoing.close();
   });
+
+  it("treats empty-string origin as unset (no origin= in upstream URL)", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url), { origin: "" });
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).not.toContain("origin=");
+    outgoing.close();
+  });
 });

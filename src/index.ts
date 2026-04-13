@@ -499,6 +499,12 @@ async function main(): Promise<void> {
 
       // Parse origin query param — optional app-identity slug forwarded to hive.
       const origin = url.searchParams.get("origin") ?? undefined;
+      if (origin && origin.length > 128) {
+        log.warn("WebSocket upgrade rejected — origin too long", { len: origin.length });
+        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
       if (channel === "team" && capabilities.get("hive") === undefined) {
         log.warn("WebSocket upgrade rejected — hive-unavailable", { deviceId: device._id });
