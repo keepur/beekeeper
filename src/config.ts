@@ -8,6 +8,49 @@ import { createLogger } from "./logging/logger.js";
 const log = createLogger("beekeeper-config");
 
 /**
+ * Merge KEY=VALUE lines from an env file into `process.env`, but only for
+ * keys that are not already set. Returns the path sourced, or null if none.
+ *
+ * Lookup order:
+ *   1. $BEEKEEPER_ENV_FILE (explicit override)
+ *   2. $HOME/.beekeeper/env (default install location)
+ *
+ * This lets the CLI and the server work without requiring the caller to
+ * manually `source` the env file first. Under launchd, the wrapper script
+ * already exported the vars so this is a no-op.
+ */
+export function autoSourceEnv(): string | null {
+  const candidates = [
+    process.env.BEEKEEPER_ENV_FILE,
+    join(homedir(), ".beekeeper", "env"),
+  ].filter((p): p is string => typeof p === "string" && p.length > 0);
+
+  for (const path of candidates) {
+    if (!existsSync(path)) continue;
+    const content = readFileSync(path, "utf-8");
+    for (const rawLine of content.split("\n")) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (!match) continue;
+      const [, key, rawValue] = match;
+      if (process.env[key] !== undefined) continue; // existing env wins
+      // Strip a single pair of surrounding quotes if present.
+      let value = rawValue;
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+    return path;
+  }
+  return null;
+}
+
+/**
  * Discover all installed Claude Code plugins from ~/.claude/plugins/installed_plugins.json.
  */
 function discoverInstalledPlugins(): string[] {
@@ -54,6 +97,11 @@ function discoverUserSkills(): string[] {
 }
 
 export function loadConfig(): BeekeeperConfig {
+  const sourced = autoSourceEnv();
+  if (sourced) {
+    log.info("Sourced env file", { path: sourced });
+  }
+
   const configPath = resolve(process.env.BEEKEEPER_CONFIG ?? "./beekeeper.yaml");
   if (!existsSync(configPath)) {
     throw new Error(`Beekeeper config not found: ${configPath}`);
