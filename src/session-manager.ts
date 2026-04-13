@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, dirname } from "node:path";
 import { query, type Query, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { WebSocket } from "ws";
@@ -10,6 +11,22 @@ import type { ServerMessage, BeekeeperConfig } from "./types.js";
 import { listWorkspaceSessions as scanWorkspaceSessions, INIT_PROMPT } from "./session-history.js";
 
 const log = createLogger("beekeeper-session");
+
+// Workaround for @anthropic-ai/claude-agent-sdk exports regression (present at
+// least in 0.2.101): the SDK bundles its Claude Code binary at ./cli.js but
+// that subpath is NOT listed in its package.json "exports" field, so the
+// SDK's own internal `require.resolve("./cli.js")` throws
+// ERR_PACKAGE_PATH_NOT_EXPORTED and the caller sees an opaque
+// "Claude Code executable not found" error at first query(). We resolve the
+// SDK's main entry (which IS exported as "."), take its dirname, and join
+// cli.js — a plain filesystem path lookup that bypasses exports entirely.
+// If/when the SDK either lists ./cli.js in exports or switches its own
+// resolver to an import.meta.url-relative URL, this constant can be dropped.
+const sdkRequire = createRequire(import.meta.url);
+const claudeCodeCliPath = join(
+  dirname(sdkRequire.resolve("@anthropic-ai/claude-agent-sdk")),
+  "cli.js",
+);
 
 export interface SessionSlot {
   sessionId: string;
@@ -641,6 +658,7 @@ export class SessionManager {
       const q = query({
         prompt: text,
         options: {
+          pathToClaudeCodeExecutable: claudeCodeCliPath,
           model: this.config.model,
           permissionMode: "bypassPermissions",
           allowDangerouslySkipPermissions: true,
