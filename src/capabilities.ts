@@ -122,8 +122,12 @@ export class CapabilityManifest {
       snapshot.map(async (entry) => {
         const ok = await this.probe(entry.healthUrl);
         // Entry may have been removed or re-registered during the await.
+        // On re-registration `register()` creates a fresh CapabilityEntry
+        // object, so identity differs from our snapshot — drop the stale
+        // probe result on the floor rather than applying it to a freshly
+        // reset failure count (which could cause premature eviction).
         const current = this.entries.get(entry.name);
-        if (!current) return;
+        if (!current || current !== entry) return;
 
         current.lastCheckedAt = Date.now();
         if (ok) {

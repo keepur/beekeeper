@@ -185,6 +185,45 @@ describe("CapabilityManifest", () => {
       expect(manifest.get("hive")?.lastCheckedAt).not.toBeNull();
     });
 
+    it("ignores probe result if entry was re-registered during the await", async () => {
+      // Race: health check fires, probe() takes a while, hive re-registers
+      // mid-probe (resets failure count to 0), probe returns failure.
+      // The stale probe result must NOT be applied to the freshly registered
+      // entry — otherwise two such overlaps could evict a healthy Hive.
+      let resolveProbe: (value: { ok: boolean }) => void;
+      const probePromise = new Promise<{ ok: boolean }>((r) => {
+        resolveProbe = r;
+      });
+      const fetchMock = vi.fn().mockReturnValue(probePromise);
+      vi.stubGlobal("fetch", fetchMock);
+
+      manifest.register({
+        name: "hive",
+        localWsUrl: "ws://127.0.0.1:4001/ws",
+        healthUrl: "http://127.0.0.1:4001/health",
+      });
+      // Pre-existing failure from a prior round we want preserved-or-reset
+      // correctly by the re-registration, not clobbered by the stale probe.
+      manifest.get("hive")!.consecutiveFailures = 1;
+
+      const checkRun = manifest.runHealthChecks(2);
+
+      // Hive re-registers while probe is pending — fresh entry, failures=0.
+      manifest.register({
+        name: "hive",
+        localWsUrl: "ws://127.0.0.1:4001/ws",
+        healthUrl: "http://127.0.0.1:4001/health",
+      });
+      expect(manifest.get("hive")?.consecutiveFailures).toBe(0);
+
+      // Probe finally returns failure — should be dropped on the floor.
+      resolveProbe!({ ok: false });
+      await checkRun;
+
+      expect(manifest.get("hive")).toBeDefined();
+      expect(manifest.get("hive")?.consecutiveFailures).toBe(0);
+    });
+
     it("startHealthLoop is idempotent and stopHealthLoop is safe to call twice", () => {
       manifest.startHealthLoop(60_000, 2);
       manifest.startHealthLoop(60_000, 2);
