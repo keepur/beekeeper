@@ -6,24 +6,27 @@ Claude Code session gateway — real development from your phone (or any device)
 
 ## Quick Start
 
-### 1. Install globally
+Beekeeper is currently distributed as source — there's no npm package yet. You clone the repo, build, and run it.
+
+### 1. Install from source
 
 ```bash
-npm install -g @keepur/beekeeper
+git clone https://github.com/keepur/beekeeper.git
+cd beekeeper
+npm ci
+npm run build
 ```
 
-### 2. Create a config file
+Requires Node **22 or newer** (`engines.node` in `package.json`). The build compiles TypeScript to `dist/` and produces the `dist/cli.js` entry point used by all `beekeeper` commands in the examples below.
 
-Copy `beekeeper.yaml.example` to `beekeeper.yaml` in your project directory:
+> When you see `beekeeper <subcommand>` in the docs, substitute `node dist/cli.js <subcommand>` until you've added a shell alias or `npm link`ed the package.
 
-```bash
-beekeeper  # Starts the server (reads beekeeper.yaml from current directory or BEEKEEPER_CONFIG env var)
-```
-
-Or explicitly pass a config directory:
+### 2. Create a config directory
 
 ```bash
-beekeeper install ~/my-beekeeper-config
+mkdir -p ~/.beekeeper
+cp beekeeper.yaml.example ~/.beekeeper/beekeeper.yaml
+# edit ~/.beekeeper/beekeeper.yaml as needed (port, model, workspaces)
 ```
 
 ### 3. Set environment variables
@@ -180,21 +183,19 @@ Beekeeper automatically discovers plugins from two sources:
 
 Plugins are loaded into each session, extending available tools and commands. See the Claude Code SDK docs for plugin development.
 
-## Running alongside Hive
+## Optional: sibling-process federation
 
-Beekeeper is the single public-facing gateway on a box that may also run [Hive](https://github.com/keepur/hive). There is **no manual wiring** between the two processes — Hive registers itself with Beekeeper on startup.
+Beekeeper exposes an internal loopback API that lets a second process running on the same machine register itself as an additional capability served over the same public port. Clients then opt into that capability via a `?channel=` query param on the WebSocket URL. The mechanism is generic — any sibling process that can bind loopback and POST JSON can participate — but the concrete use case today is [Hive](https://github.com/keepur/hive), a team/Slack channel served as `channel=team`.
 
-**How it works:**
+**Beekeeper-only deployments need no setup for this.** `GET /capabilities` will simply return `{ "capabilities": ["beekeeper"] }` and `channel=team` upgrades will return `503 no-such-channel`. You can ignore this entire section unless you're running a sibling.
 
-1. Beekeeper listens on its public port (default `8420`). Hive binds its WebSocket adapter to `127.0.0.1:3200` — loopback only.
-2. On boot (and every 30s thereafter), Hive calls `POST http://127.0.0.1:8420/internal/register-capability` with its `localWsUrl` and `healthUrl`. The loopback check is the auth.
-3. Beekeeper stores the registration in memory and health-checks it every 10s. Two consecutive failures drop the entry.
-4. Clients connect to Beekeeper with `wss://<host>/?token=<jwt>&channel=team`. Beekeeper proxies the socket to Hive's loopback WS. Omitting `channel` (or passing `channel=beekeeper`) routes to Beekeeper's own Claude Code session manager.
-5. If Hive is not currently registered, `channel=team` upgrades are rejected with `503 hive-unavailable` and Hive does not appear in `GET /capabilities`.
+**How it works (for sibling authors):**
 
-**Start order is irrelevant.** Beekeeper can start before or after Hive; the 30s re-registration loop on Hive's side makes the system self-heal across restarts of either process. Nothing in `beekeeper.yaml` needs to mention Hive.
-
-**Beekeeper-only boxes** (e.g. a dev laptop with Claude Code sessions but no Hive) just see `{ "capabilities": ["beekeeper"] }` forever. No extra configuration required.
+1. Beekeeper listens on its public port (default `8420`). The sibling binds its own WebSocket adapter to a loopback-only port (Hive uses `127.0.0.1:3200`).
+2. On boot — and every 30s thereafter, to survive Beekeeper restarts — the sibling calls `POST http://127.0.0.1:8420/internal/register-capability` with its `name`, `localWsUrl`, and `healthUrl`. Auth is enforced purely by the loopback check (`remoteAddress` must be `127.0.0.1` or `::1`); no bearer token is required.
+3. Beekeeper records the registration in memory and health-checks `healthUrl` every 10s. Two consecutive failures drop the entry.
+4. Clients connect to Beekeeper with `wss://<host>/?token=<jwt>&channel=<name>`. Beekeeper proxies the socket to the sibling's loopback WS. Omitting `channel` (or passing `channel=beekeeper`) routes to Beekeeper's own Claude Code session manager.
+5. Start order is irrelevant: the sibling's re-registration loop makes the system self-heal across restarts of either process. Nothing in `beekeeper.yaml` needs to mention the sibling.
 
 ## macOS LaunchAgent Setup
 
@@ -222,6 +223,94 @@ View logs:
 ```bash
 log stream --predicate 'process == "beekeeper"' --level debug
 ```
+
+## Updating
+
+### Manual update
+
+From your source checkout:
+
+```bash
+git pull --ff-only
+npm ci
+npm run build
+beekeeper install ~/.beekeeper        # regenerates wrapper + plist
+launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeper
+```
+
+`beekeeper install` is idempotent — it always regenerates `bin/start.sh` and the plist from scratch, so it's safe to re-run on every update. `launchctl kickstart -k` restarts the service in place without unloading the plist.
+
+### Automated update
+
+The repo ships a `scripts/update.sh` helper that wraps all of the above. It's **idempotent** — if there are no new commits upstream it exits `0` without rebuilding, so it's cheap to run on a schedule.
+
+```bash
+scripts/update.sh                    # defaults to ~/.beekeeper
+scripts/update.sh /path/to/config    # or pass a config dir
+```
+
+Environment overrides:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BEEKEEPER_LABEL` | `io.keepur.beekeeper` | LaunchAgent label to restart |
+| `BEEKEEPER_UPDATE_BRANCH` | `main` | Required current branch (safety guard) |
+
+By default the script refuses to run unless you're on `main`, so a local branch you forgot to switch off of won't get silently clobbered.
+
+### Scheduling auto-updates
+
+You can wire `scripts/update.sh` into any scheduler. The two obvious choices on macOS:
+
+**Option 1 — cron** (simple, but cron runs outside the user's `launchd` session so `launchctl kickstart gui/$UID/...` may not have permission to touch a GUI-session LaunchAgent; prefer Option 2 on modern macOS):
+
+```cron
+# crontab -e  — check for updates every 15 minutes
+*/15 * * * * /Users/you/beekeeper/scripts/update.sh >> /Users/you/.beekeeper/logs/update.log 2>&1
+```
+
+**Option 2 — a second LaunchAgent** (recommended on macOS — runs inside your user `gui/` session so `launchctl kickstart` works, and survives reboots):
+
+Create `~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.keepur.beekeeper-updater</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/you/beekeeper/scripts/update.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/you/.beekeeper/logs/update.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/.beekeeper/logs/update.err</string>
+</dict>
+</plist>
+```
+
+Then load it:
+
+```bash
+launchctl load ~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist
+```
+
+`StartInterval` is in seconds — `900` = 15 minutes. Use `StartCalendarInterval` instead if you want fixed-time updates (e.g. daily at 04:00) rather than a rolling interval.
+
+**Tail the update log** to see what the scheduler is doing:
+
+```bash
+tail -f ~/.beekeeper/logs/update.log
+```
+
+On a no-op tick you'll see `[beekeeper-update] already up to date`. On an actual update you'll see the full pull → build → install → kickstart sequence.
 
 ## Pairing a Device
 
@@ -395,15 +484,11 @@ Sessions are stored in SQLite under `BEEKEEPER_DATA_DIR`:
 
 Sessions survive server restarts and device disconnects. Multiple clients can attach to the same session.
 
-## Database Migration (MongoDB → SQLite)
+## Contributing
 
-If upgrading from an older version backed by MongoDB:
+Issues and pull requests welcome. CI (typecheck + full test suite) runs on a self-hosted macOS runner for every PR and every push to `main`, so please run `npm run check` locally before opening a PR — it runs the same steps the CI does.
 
-```bash
-MONGO_URI="mongodb://..." beekeeper migrate --from-mongo
-```
-
-This exports all devices from the `hive.beekeeper_devices` collection to SQLite. Pairing codes are ephemeral and not migrated; re-pair devices after migration.
+`main` is a protected branch: all changes land via PR, no force-pushes, linear history only.
 
 ## License
 
