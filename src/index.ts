@@ -497,6 +497,9 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Parse origin query param — optional app-identity slug forwarded to hive.
+      const origin = url.searchParams.get("origin") ?? undefined;
+
       if (channel === "team" && capabilities.get("hive") === undefined) {
         log.warn("WebSocket upgrade rejected — hive-unavailable", { deviceId: device._id });
         socket.write("HTTP/1.1 503 hive-unavailable\r\n\r\n");
@@ -505,7 +508,7 @@ async function main(): Promise<void> {
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, device, channel);
+        wss.emit("connection", ws, device, channel, origin);
       });
     } catch (err) {
       log.error("WebSocket upgrade error", { error: String(err) });
@@ -516,7 +519,12 @@ async function main(): Promise<void> {
 
   // --- Multi-client connection management ---
 
-  wss.on("connection", (ws: WebSocket, device: BeekeeperDevice, channel: "beekeeper" | "team" = "beekeeper") => {
+  wss.on("connection", (
+    ws: WebSocket,
+    device: BeekeeperDevice,
+    channel: "beekeeper" | "team" = "beekeeper",
+    origin?: string,
+  ) => {
     log.info("Client connected", { deviceId: device._id, name: device.name, channel });
 
     // Track this connection (client socket + optional upstream proxy socket).
@@ -553,7 +561,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        const handle = proxyTeamConnection(ws, device, hiveEntry);
+        const handle = proxyTeamConnection(ws, device, hiveEntry, { origin });
         conn.upstreamWs = handle.upstreamWs;
         conn.dispose = handle.dispose;
       } catch (err) {
