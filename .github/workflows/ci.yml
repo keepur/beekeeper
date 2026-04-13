@@ -1,0 +1,38 @@
+name: CI
+
+# This workflow only runs `npm` commands with static arguments — no untrusted
+# input (PR titles, commit messages, head refs, etc.) is interpolated into any
+# `run:` block, so there is no script-injection surface here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck + Test + Build
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
