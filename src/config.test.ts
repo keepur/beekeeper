@@ -11,9 +11,13 @@ vi.mock("yaml", () => ({
 }));
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { loadConfig } from "./config.js";
+import { loadConfig, autoSourceEnv } from "./config.js";
 import type { BeekeeperConfig } from "./types.js";
+
+const DEFAULT_ENV_PATH = join(homedir(), ".beekeeper", "env");
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -177,5 +181,84 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.defaultWorkspace).toBe("my-project");
     expect(config.workspaces).toEqual({ "my-project": "~/code/my-project" });
+  });
+});
+
+describe("autoSourceEnv", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    process.env = { ...originalEnv };
+    process.env.HOME = "/Users/testuser";
+    delete process.env.BEEKEEPER_ENV_FILE;
+    delete process.env.BEEKEEPER_JWT_SECRET;
+    delete process.env.BEEKEEPER_ADMIN_SECRET;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("returns null when no env file exists", () => {
+    mockExistsSync.mockReturnValue(false);
+    expect(autoSourceEnv()).toBeNull();
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBeUndefined();
+  });
+
+  it("sources $HOME/.beekeeper/env when present", () => {
+    mockExistsSync.mockImplementation((p) => String(p) === DEFAULT_ENV_PATH);
+    mockReadFileSync.mockReturnValue(
+      "BEEKEEPER_JWT_SECRET=from-file-jwt\nBEEKEEPER_ADMIN_SECRET=from-file-admin\n",
+    );
+    const sourced = autoSourceEnv();
+    expect(sourced).toBe(DEFAULT_ENV_PATH);
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe("from-file-jwt");
+    expect(process.env.BEEKEEPER_ADMIN_SECRET).toBe("from-file-admin");
+  });
+
+  it("existing env vars win over the env file", () => {
+    process.env.BEEKEEPER_JWT_SECRET = "from-shell";
+    mockExistsSync.mockImplementation((p) => String(p) === DEFAULT_ENV_PATH);
+    mockReadFileSync.mockReturnValue("BEEKEEPER_JWT_SECRET=from-file\n");
+    autoSourceEnv();
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe("from-shell");
+  });
+
+  it("honors BEEKEEPER_ENV_FILE override before the default location", () => {
+    process.env.BEEKEEPER_ENV_FILE = "/custom/env";
+    mockExistsSync.mockImplementation((p) => String(p) === "/custom/env");
+    mockReadFileSync.mockReturnValue("BEEKEEPER_JWT_SECRET=custom\n");
+    expect(autoSourceEnv()).toBe("/custom/env");
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe("custom");
+  });
+
+  it("skips blank lines, comments, and malformed lines", () => {
+    mockExistsSync.mockImplementation((p) => String(p) === DEFAULT_ENV_PATH);
+    mockReadFileSync.mockReturnValue(
+      [
+        "",
+        "# this is a comment",
+        "   # indented comment",
+        "no_equals_sign",
+        "BEEKEEPER_JWT_SECRET=ok",
+        "",
+      ].join("\n"),
+    );
+    autoSourceEnv();
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe("ok");
+  });
+
+  it("strips a single pair of surrounding quotes from values", () => {
+    mockExistsSync.mockImplementation((p) => String(p) === DEFAULT_ENV_PATH);
+    mockReadFileSync.mockReturnValue(
+      [
+        'BEEKEEPER_JWT_SECRET="quoted-value"',
+        "BEEKEEPER_ADMIN_SECRET='single-quoted'",
+      ].join("\n"),
+    );
+    autoSourceEnv();
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe("quoted-value");
+    expect(process.env.BEEKEEPER_ADMIN_SECRET).toBe("single-quoted");
   });
 });

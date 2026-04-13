@@ -38,7 +38,22 @@ Optional:
 ```bash
 export BEEKEEPER_CONFIG="/path/to/beekeeper.yaml"  # Default: ./beekeeper.yaml
 export BEEKEEPER_DATA_DIR="/path/to/data"          # Default: ~/.beekeeper
+export BEEKEEPER_ENV_FILE="/path/to/env"           # Default: ~/.beekeeper/env
 ```
+
+**Or, instead of exporting them in every shell,** drop the secrets into `~/.beekeeper/env` (or whichever `BEEKEEPER_ENV_FILE` you prefer) as `KEY=VALUE` lines:
+
+```bash
+install -m 600 /dev/null ~/.beekeeper/env
+cat > ~/.beekeeper/env <<'EOF'
+BEEKEEPER_JWT_SECRET=your-secret-key-min-32-chars
+BEEKEEPER_ADMIN_SECRET=your-admin-secret-min-32-chars
+BEEKEEPER_CONFIG=/Users/you/.beekeeper/beekeeper.yaml
+BEEKEEPER_DATA_DIR=/Users/you/.beekeeper/data
+EOF
+```
+
+`loadConfig()` auto-sources this file on startup (both server and CLI), so `beekeeper pair "Alice's iPhone"` works from any shell without manually `source`-ing first. Existing shell env vars always win over the file, so you can override per-run. Blank lines, `#` comments, and `KEY="quoted"` / `KEY='quoted'` values are all supported.
 
 ### 4. Start the server
 
@@ -186,10 +201,17 @@ Beekeeper is the single public-facing gateway on a box that may also run [Hive](
 To run Beekeeper as a background service on macOS:
 
 ```bash
-beekeeper install /path/to/config
+beekeeper install ~/.beekeeper
 ```
 
-This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/com.keepur.beekeeper.plist`. The service auto-starts on login.
+This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/com.keepur.beekeeper.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`).
+
+**Two install modes, auto-selected:**
+
+- **Wrapper mode** (preferred): if `<configDir>/env` exists at install time, `beekeeper install` generates a wrapper shell script at `<repoRoot>/bin/start.sh` that sources the env file and execs node. The plist runs the wrapper. This keeps secrets out of the plist and out of `launchctl` state, and lets you rotate secrets by editing the env file + restarting the service. This is the recommended mode.
+- **Direct mode** (fallback): if no env file exists, the plist runs node directly with `BEEKEEPER_CONFIG=beekeeper.yaml` as its only env var. You'd need to add `BEEKEEPER_JWT_SECRET` and `BEEKEEPER_ADMIN_SECRET` to the plist's `EnvironmentVariables` dict manually, which is why wrapper mode is the default recommendation.
+
+Re-running `beekeeper install` is idempotent and will regenerate both the wrapper script and the plist from scratch — any manual plist edits you made will be clobbered, so keep your source of truth in the env file and/or re-run install after changes.
 
 To uninstall:
 ```bash
