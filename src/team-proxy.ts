@@ -22,6 +22,8 @@ export interface ProxyTeamConnectionOptions {
   backpressureResumePollMs?: number;
   /** Upstream keepalive ping interval in ms (default 30_000). */
   upstreamPingIntervalMs?: number;
+  /** Opaque app-identity slug forwarded to hive via the upstream URL. */
+  origin?: string;
 }
 
 const DEFAULT_BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024;
@@ -54,12 +56,15 @@ export function proxyTeamConnection(
   const deviceName = device.name;
 
   const base = hiveEntry.localWsUrl.replace(/\/+$/, "");
-  const upstreamUrl =
+  let upstreamUrl =
     base +
     "/?internal=1&deviceId=" +
     encodeURIComponent(deviceId) +
     "&name=" +
     encodeURIComponent(deviceName);
+  if (options.origin) {
+    upstreamUrl += "&origin=" + encodeURIComponent(options.origin);
+  }
 
   log.info("Opening team upstream", { deviceId, hive: hiveEntry.name, url: base });
 

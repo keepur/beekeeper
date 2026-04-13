@@ -393,4 +393,96 @@ describe("proxyTeamConnection", () => {
     await outgoingClosed;
     await upstreamClosed;
   });
+
+  it("appends origin to upstream URL when options.origin is set", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url), { origin: "dodi-shop" });
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).toContain("&origin=dodi-shop");
+    outgoing.close();
+  });
+
+  it("omits origin from upstream URL when options.origin is unset", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url));
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).not.toContain("origin=");
+    outgoing.close();
+  });
+
+  it("url-encodes origin values with special chars", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url), { origin: "weird slug/1" });
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).toContain("&origin=weird%20slug%2F1");
+    outgoing.close();
+  });
+
+  it("treats empty-string origin as unset (no origin= in upstream URL)", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url), { origin: "" });
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).not.toContain("origin=");
+    outgoing.close();
+  });
 });

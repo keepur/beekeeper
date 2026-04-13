@@ -48,6 +48,7 @@ Required:
 ```bash
 export BEEKEEPER_JWT_SECRET="your-secret-key-min-32-chars"
 export BEEKEEPER_ADMIN_SECRET="your-admin-secret-min-32-chars"
+export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
 Optional:
@@ -120,6 +121,7 @@ confirm_operations:
 |----------|----------|---------|
 | `BEEKEEPER_JWT_SECRET` | Yes | Secret key for signing device JWTs (min 32 chars) |
 | `BEEKEEPER_ADMIN_SECRET` | Yes | Bearer token for admin API access (min 32 chars) |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key used by the Claude Agent SDK |
 | `BEEKEEPER_CONFIG` | No | Path to `beekeeper.yaml` (default: `./beekeeper.yaml`) |
 | `BEEKEEPER_DATA_DIR` | No | SQLite database & session storage (default: `~/.beekeeper`) |
 
