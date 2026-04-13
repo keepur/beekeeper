@@ -204,7 +204,7 @@ To run Beekeeper as a background service on macOS:
 beekeeper install ~/.beekeeper
 ```
 
-This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/com.keepur.beekeeper.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`).
+This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeper.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`).
 
 **Two install modes, auto-selected:**
 

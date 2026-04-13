@@ -38,6 +38,16 @@ describe("generatePlist", () => {
     expect(xml).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
   });
 
+  it("uses the io.keepur.beekeeper reverse-DNS label", () => {
+    // The real domain is keepur.io — NOT keepur.com. A rename to
+    // com.keepur.* would be both factually wrong AND a breaking change
+    // for anyone running the service today, so any future rename
+    // should require updating this test deliberately.
+    const xml = generatePlist(baseOptions);
+    expect(xml).toContain("<string>io.keepur.beekeeper</string>");
+    expect(xml).not.toContain("com.keepur.beekeeper");
+  });
+
   it("escapes XML-special characters in paths", () => {
     const xml = generatePlist({
       ...baseOptions,

@@ -6,7 +6,10 @@ import { createLogger } from "../logging/logger.js";
 
 const log = createLogger("beekeeper-service");
 
-const LABEL = "com.keepur.beekeeper";
+// Reverse-DNS label for the LaunchAgent. The real domain is keepur.io, so
+// the reverse is io.keepur.beekeeper — NOT com.keepur.beekeeper (we do not
+// own keepur.com).
+const LABEL = "io.keepur.beekeeper";
 
 /**
  * Resolve where the built index.js lives for this install.
