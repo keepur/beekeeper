@@ -18,11 +18,35 @@ function resolveIndexPath(): string {
 }
 
 /**
- * Resolve the repo/source root that contains the `dist/` directory. This is
- * where the wrapper script gets written in wrapper mode.
+ * Resolve the repo/source root that contains the `dist/` directory. At
+ * runtime `import.meta.dirname` is `<repo>/dist/service`, so `..` is
+ * `<repo>/dist` and `../..` is the repo root. This is where the wrapper
+ * script gets written in wrapper mode.
  */
 function resolveRepoRoot(): string {
-  return resolve(import.meta.dirname, "../../..");
+  return resolve(import.meta.dirname, "../..");
+}
+
+/**
+ * POSIX shell-quote: wrap in single quotes and escape any embedded single
+ * quotes via the `'\''` dance. Safe for any byte sequence except NUL.
+ * Used to embed runtime paths into the generated wrapper script so a
+ * workDir containing `"`, `$`, or a backtick can't corrupt it.
+ */
+function shQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Escape a string for safe inclusion inside an XML text node or attribute.
+ * The plist format is XML; paths containing `&`, `<`, or `>` would
+ * otherwise produce an invalid document.
+ */
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 /**
@@ -41,7 +65,7 @@ function writeWrapperScript(envFile: string, nodePath: string, indexPath: string
 # Sources the env file (secrets + paths) and execs the built server.
 set -euo pipefail
 
-ENV_FILE="${envFile}"
+ENV_FILE=${shQuote(envFile)}
 if [[ ! -f "\${ENV_FILE}" ]]; then
   echo "missing env file: \${ENV_FILE}" >&2
   exit 1
@@ -52,7 +76,7 @@ set -a
 . "\${ENV_FILE}"
 set +a
 
-exec "${nodePath}" "${indexPath}"
+exec ${shQuote(nodePath)} ${shQuote(indexPath)}
 `;
 
   writeFileSync(wrapperPath, content);
@@ -76,7 +100,7 @@ export function generatePlist(options: {
 
   const programArgs = wrapperPath ? [wrapperPath] : [nodePath, indexPath];
   const programArgsXml = programArgs
-    .map((arg) => `    <string>${arg}</string>`)
+    .map((arg) => `    <string>${xmlEscape(arg)}</string>`)
     .join("\n");
 
   // When a wrapper sources its own env file, the plist doesn't need to embed
@@ -95,13 +119,13 @@ export function generatePlist(options: {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LABEL}</string>
+  <string>${xmlEscape(LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
 ${programArgsXml}
   </array>
   <key>WorkingDirectory</key>
-  <string>${configDir}</string>
+  <string>${xmlEscape(configDir)}</string>
 ${envVarsXml}  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -109,9 +133,9 @@ ${envVarsXml}  <key>RunAtLoad</key>
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>${logDir}/beekeeper.log</string>
+  <string>${xmlEscape(logDir)}/beekeeper.log</string>
   <key>StandardErrorPath</key>
-  <string>${logDir}/beekeeper.err</string>
+  <string>${xmlEscape(logDir)}/beekeeper.err</string>
 </dict>
 </plist>`;
 }

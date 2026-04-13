@@ -261,4 +261,16 @@ describe("autoSourceEnv", () => {
     expect(process.env.BEEKEEPER_JWT_SECRET).toBe("quoted-value");
     expect(process.env.BEEKEEPER_ADMIN_SECRET).toBe("single-quoted");
   });
+
+  it("passes values with unbalanced quotes through literally", () => {
+    // Matches neither startsWith && endsWith check, so the value should be
+    // preserved as-is rather than having a stray leading quote stripped.
+    // This is the defensible behavior for a malformed env file — we don't
+    // want to silently "fix" it and hand the downstream consumer a value
+    // that's subtly different from what's on disk.
+    mockExistsSync.mockImplementation((p) => String(p) === DEFAULT_ENV_PATH);
+    mockReadFileSync.mockReturnValue('BEEKEEPER_JWT_SECRET="unclosed\n');
+    autoSourceEnv();
+    expect(process.env.BEEKEEPER_JWT_SECRET).toBe('"unclosed');
+  });
 });
