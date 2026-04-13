@@ -6,9 +6,22 @@ Claude Code session gateway — real development from your phone (or any device)
 
 ## Quick Start
 
-Beekeeper is currently distributed as source — there's no npm package yet. You clone the repo, build, and run it.
+Beekeeper is distributed two ways, depending on whether you want auto-updates via `scripts/update.sh`:
 
-### 1. Install from source
+- **npm** (simpler, good for casual use) — `npm install -g @keepur/beekeeper`. You get a `beekeeper` binary on your `$PATH`. Upgrades are `npm install -g @keepur/beekeeper@latest`.
+- **From source** (recommended if you plan to run as a long-lived service) — `git clone && npm ci && npm run build`. This is what the `scripts/update.sh` auto-updater in the [Updating](#updating) section expects, since it runs `git pull` + rebuild in-place.
+
+Both install paths require Node **22 or newer** (`engines.node` in `package.json`).
+
+### 1a. Install via npm
+
+```bash
+npm install -g @keepur/beekeeper
+```
+
+This gives you a `beekeeper` command globally. All commands in the rest of this README (`beekeeper pair`, `beekeeper install`, etc.) work as shown.
+
+### 1b. Install from source
 
 ```bash
 git clone https://github.com/keepur/beekeeper.git
@@ -17,9 +30,9 @@ npm ci
 npm run build
 ```
 
-Requires Node **22 or newer** (`engines.node` in `package.json`). The build compiles TypeScript to `dist/` and produces the `dist/cli.js` entry point used by all `beekeeper` commands in the examples below.
+The build compiles TypeScript to `dist/` and produces the `dist/cli.js` entry point.
 
-> When you see `beekeeper <subcommand>` in the docs, substitute `node dist/cli.js <subcommand>` until you've added a shell alias or `npm link`ed the package.
+> When you see `beekeeper <subcommand>` in the docs after a source install, substitute `node dist/cli.js <subcommand>` — or `npm link` in the checkout to get a real `beekeeper` on your `$PATH`.
 
 ### 2. Create a config directory
 
