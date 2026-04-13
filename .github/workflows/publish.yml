@@ -5,14 +5,19 @@ name: Publish to npm
 # running `npm publish`, so a mistyped tag is a hard fail rather than an
 # accidental wrong-version publish.
 #
-# Security notes:
+# Security / auth notes:
 # - `github.ref_name` (the tag name) is piped through an `env:` block
 #   as $TAG_REF instead of being interpolated directly into a `run:`
 #   shell line, so a malicious tag name cannot break out of quoting.
 #   See the SAFE pattern in
 #   https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
-# - NPM_TOKEN is passed via env and echoed into a workspace-local
-#   .npmrc, which is removed in the `Clean up` step even on failure.
+# - npm auth is NOT configured via a repo secret — this workflow runs
+#   on a self-hosted macOS runner (user `mokie`) that already has a
+#   long-lived npm login token in `~/.npmrc`, so `npm publish` picks
+#   up auth from ambient state. If you ever move the runner to a
+#   different host/user/container, add an `NPM_TOKEN` repo secret and
+#   a `Configure npm auth` step that writes it to a workspace `.npmrc`
+#   before the `Publish` step — until then, keep it simple.
 # - Tag pushes aren't covered by branch protection on `main`, so only
 #   principals who can push to the repo can trigger this workflow.
 
@@ -57,14 +62,5 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Configure npm auth
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
-
       - name: Publish
         run: npm publish --access public
-
-      - name: Clean up .npmrc
-        if: always()
-        run: rm -f .npmrc

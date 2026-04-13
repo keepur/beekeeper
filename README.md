@@ -514,7 +514,7 @@ git push origin main    # push the version-bump commit (via PR if branch protect
 git push origin --tags  # pushing the tag kicks off the publish workflow
 ```
 
-The workflow verifies that `package.json`'s version matches the tag, runs the full typecheck + test + build pipeline, and only then publishes. A mistyped tag fails fast instead of publishing a wrong version. Requires the `NPM_TOKEN` repo secret to be configured with an npm automation token that has publish rights on the `@keepur` scope.
+The workflow verifies that `package.json`'s version matches the tag, runs the full typecheck + test + build pipeline, and only then publishes. A mistyped tag fails fast instead of publishing a wrong version. npm auth is picked up from the self-hosted runner's ambient `~/.npmrc`; if you ever move the runner to a different host or user, add an `NPM_TOKEN` repo secret and write it to a workspace `.npmrc` before the `Publish` step.
 
 ## License
 
