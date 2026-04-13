@@ -528,6 +528,15 @@ async function main(): Promise<void> {
     }
     clientSet.add(conn);
 
+    // Refresh lastSeenAt for both channels — team connections are proxied
+    // opaquely and never reach the ping handler below, so this is the only
+    // place the team path touches the device registry on connect.
+    try {
+      deviceRegistry.updateLastSeen(device._id);
+    } catch (err) {
+      log.warn("Failed to update lastSeenAt", { error: String(err) });
+    }
+
     // Team channel: transparent proxy to Hive. No session manager, no
     // beekeeper message loop — just wire up the proxy and install lifecycle
     // hooks to keep connectedClients consistent.
@@ -585,13 +594,6 @@ async function main(): Promise<void> {
     }
 
     sessionManager.addClient(device._id, ws);
-
-    // Update lastSeenAt
-    try {
-      deviceRegistry.updateLastSeen(device._id);
-    } catch (err) {
-      log.warn("Failed to update lastSeenAt", { error: String(err) });
-    }
 
     // Send session list to this device on connect
     const activeSessions = sessionManager.getActiveSessions();
