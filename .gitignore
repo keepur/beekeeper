@@ -4,3 +4,4 @@ beekeeper.yaml
 .env
 *.db
 *.key.salt
+.claude/

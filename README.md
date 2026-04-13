@@ -503,6 +503,19 @@ Issues and pull requests welcome. CI (typecheck + full test suite) runs on a sel
 
 `main` is a protected branch: all changes land via PR, no force-pushes, linear history only.
 
+### Releasing a new version
+
+Releases to [`@keepur/beekeeper` on npm](https://www.npmjs.com/package/@keepur/beekeeper) are automated via the `Publish to npm` GitHub Actions workflow, triggered by pushing a `v*.*.*` semver tag. The typical flow is:
+
+```bash
+# from a clean checkout on main
+npm version patch       # or 'minor' / 'major'; edits package.json AND creates a git tag
+git push origin main    # push the version-bump commit (via PR if branch protection blocks it)
+git push origin --tags  # pushing the tag kicks off the publish workflow
+```
+
+The workflow verifies that `package.json`'s version matches the tag, runs the full typecheck + test + build pipeline, and only then publishes. A mistyped tag fails fast instead of publishing a wrong version. npm auth is picked up from the self-hosted runner's ambient `~/.npmrc`; if you ever move the runner to a different host or user, add an `NPM_TOKEN` repo secret and write it to a workspace `.npmrc` before the `Publish` step.
+
 ## License
 
 Apache License 2.0 — See [LICENSE](LICENSE) for details.
