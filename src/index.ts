@@ -56,7 +56,9 @@ async function main(): Promise<void> {
     return timingSafeEqual(provided, expected);
   }
 
-  function verifyDeviceToken(req: IncomingMessage): BeekeeperDevice | null {
+  function verifyDeviceToken(
+    req: IncomingMessage,
+  ): { device: BeekeeperDevice; user: string } | null {
     const auth = req.headers.authorization;
     const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
     if (!token) return null;
@@ -95,7 +97,7 @@ async function main(): Promise<void> {
     if (req.method === "POST" && url.pathname === "/pair") {
       try {
         const body = await readBody(req);
-        let parsed: { code?: string; name?: string };
+        let parsed: { code?: string; label?: string; name?: string };
         try {
           parsed = JSON.parse(body);
         } catch {
@@ -110,8 +112,11 @@ async function main(): Promise<void> {
           return;
         }
 
-        const name = typeof parsed.name === "string" ? parsed.name.trim() : undefined;
-        const result = deviceRegistry.verifyPairingCode(parsed.code, name || undefined);
+        const rawLabel = typeof parsed.label === "string"
+          ? parsed.label
+          : (typeof parsed.name === "string" ? parsed.name : undefined);
+        const label = typeof rawLabel === "string" ? rawLabel.trim() : undefined;
+        const result = deviceRegistry.verifyPairingCode(parsed.code, label || undefined);
         if (!result) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Invalid or expired pairing code" }));
@@ -124,7 +129,9 @@ async function main(): Promise<void> {
           JSON.stringify({
             token: result.token,
             deviceId: result.device._id,
-            deviceName: result.device.name,
+            label: result.device.label,
+            deviceName: result.device.label,
+            user: result.device.userId,
             capabilities: capabilities.list(),
           }),
         );
@@ -189,8 +196,8 @@ async function main(): Promise<void> {
     // GET /capabilities (Bearer JWT) — list capability names visible to this device.
     if (req.method === "GET" && url.pathname === "/capabilities") {
       try {
-        const device = verifyDeviceToken(req);
-        if (!device) {
+        const auth = verifyDeviceToken(req);
+        if (!auth) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
@@ -210,14 +217,15 @@ async function main(): Promise<void> {
     // GET /me
     if (req.method === "GET" && url.pathname === "/me") {
       try {
-        const device = verifyDeviceToken(req);
-        if (!device) {
+        const auth = verifyDeviceToken(req);
+        if (!auth) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
         }
+        const { device, user } = auth;
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deviceId: device._id, name: device.name }));
+        res.end(JSON.stringify({ deviceId: device._id, label: device.label, name: device.label, user }));
       } catch (err) {
         log.error("GET /me error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -229,14 +237,15 @@ async function main(): Promise<void> {
     // PUT /me
     if (req.method === "PUT" && url.pathname === "/me") {
       try {
-        const device = verifyDeviceToken(req);
-        if (!device) {
+        const auth = verifyDeviceToken(req);
+        if (!auth) {
           res.writeHead(401, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
         }
+        const { device, user } = auth;
         const body = await readBody(req);
-        let parsed: { name?: string };
+        let parsed: { label?: string; name?: string };
         try {
           parsed = JSON.parse(body);
         } catch {
@@ -244,15 +253,19 @@ async function main(): Promise<void> {
           res.end(JSON.stringify({ error: "Invalid JSON" }));
           return;
         }
-        const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
-        if (!name) {
+        const rawLabel = typeof parsed.label === "string"
+          ? parsed.label
+          : (typeof parsed.name === "string" ? parsed.name : "");
+        const label = rawLabel.trim();
+        if (!label) {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Missing required field: name" }));
+          res.end(JSON.stringify({ error: "Missing required field: label" }));
           return;
         }
-        const updated = deviceRegistry.updateDevice(device._id, { name });
+        const updated = deviceRegistry.updateDevice(device._id, { label });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deviceId: device._id, name: updated?.name ?? name }));
+        const finalLabel = updated?.label ?? label;
+        res.end(JSON.stringify({ deviceId: device._id, label: finalLabel, name: finalLabel, user }));
       } catch (err) {
         log.error("PUT /me error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -273,7 +286,7 @@ async function main(): Promise<void> {
       }
       try {
         const body = await readBody(req);
-        let parsed: { name?: string };
+        let parsed: { userId?: string; label?: string };
         try {
           parsed = JSON.parse(body);
         } catch {
@@ -281,13 +294,27 @@ async function main(): Promise<void> {
           res.end(JSON.stringify({ error: "Invalid JSON" }));
           return;
         }
-        const name = parsed.name || "Unnamed Device";
-        const device = deviceRegistry.createDevice(name);
+        if (!parsed.userId || typeof parsed.userId !== "string") {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Missing required field: userId" }));
+          return;
+        }
+        const label = parsed.label || "Unnamed device";
+        let device;
+        try {
+          device = deviceRegistry.createDevice(parsed.userId, label);
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          return;
+        }
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
             deviceId: device._id,
-            name: device.name,
+            label: device.label,
+            name: device.label,
+            user: device.userId,
             pairingCode: device.pairingCode,
             expiresAt: device.pairingCodeExpiresAt,
           }),
@@ -311,7 +338,9 @@ async function main(): Promise<void> {
         const devices = deviceRegistry.listDevices();
         const list = devices.map((d) => ({
           deviceId: d._id,
-          name: d.name,
+          label: d.label,
+          name: d.label,
+          user: d.userId,
           active: d.active,
           paired: !!d.pairedAt,
           pairedAt: d.pairedAt,
@@ -348,7 +377,9 @@ async function main(): Promise<void> {
           res.end(
             JSON.stringify({
               deviceId: device._id,
-              name: device.name,
+              label: device.label,
+              name: device.label,
+              user: device.userId,
               active: device.active,
               paired: !!device.pairedAt,
               pairedAt: device.pairedAt,
@@ -369,7 +400,7 @@ async function main(): Promise<void> {
       if (req.method === "PUT" && !action) {
         try {
           const body = await readBody(req);
-          let parsed: { name?: string };
+          let parsed: { label?: string; name?: string };
           try {
             parsed = JSON.parse(body);
           } catch {
@@ -377,19 +408,23 @@ async function main(): Promise<void> {
             res.end(JSON.stringify({ error: "Invalid JSON" }));
             return;
           }
-          if (!parsed.name) {
+          const rawLabel = typeof parsed.label === "string"
+            ? parsed.label
+            : (typeof parsed.name === "string" ? parsed.name : "");
+          const label = rawLabel.trim();
+          if (!label) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "No fields to update" }));
             return;
           }
-          const device = deviceRegistry.updateDevice(deviceId, { name: parsed.name });
+          const device = deviceRegistry.updateDevice(deviceId, { label });
           if (!device) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Device not found" }));
             return;
           }
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ deviceId: device._id, name: device.name }));
+          res.end(JSON.stringify({ deviceId: device._id, label: device.label, name: device.label, user: device.userId }));
         } catch (err) {
           log.error("Update device error", { error: String(err) });
           res.writeHead(500, { "Content-Type": "application/json" });
@@ -480,13 +515,14 @@ async function main(): Promise<void> {
         return;
       }
 
-      const device = deviceRegistry.verifyToken(token);
-      if (!device) {
+      const authResult = deviceRegistry.verifyToken(token);
+      if (!authResult) {
         log.warn("WebSocket auth failed — invalid token");
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
+      const { device, user } = authResult;
 
       // Parse channel query param — defaults to "beekeeper" for backwards compat.
       const channel = url.searchParams.get("channel") ?? "beekeeper";
@@ -515,7 +551,7 @@ async function main(): Promise<void> {
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit("connection", ws, device, channel, origin);
+        wss.emit("connection", ws, device, user, channel, origin);
       });
     } catch (err) {
       log.error("WebSocket upgrade error", { error: String(err) });
@@ -529,10 +565,11 @@ async function main(): Promise<void> {
   wss.on("connection", (
     ws: WebSocket,
     device: BeekeeperDevice,
+    user: string,
     channel: "beekeeper" | "team" = "beekeeper",
     origin?: string,
   ) => {
-    log.info("Client connected", { deviceId: device._id, name: device.name, channel });
+    log.info("Client connected", { deviceId: device._id, label: device.label, user, channel });
 
     // Track this connection (client socket + optional upstream proxy socket).
     const conn: ClientConn = { clientWs: ws };
@@ -568,7 +605,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        const handle = proxyTeamConnection(ws, device, hiveEntry, { origin });
+        const handle = proxyTeamConnection(ws, device, hiveEntry, { origin, user });
         conn.upstreamWs = handle.upstreamWs;
         conn.dispose = handle.dispose;
       } catch (err) {
@@ -608,7 +645,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    sessionManager.addClient(device._id, ws);
+    sessionManager.addClient(device._id, user, ws);
 
     // Send session list to this device on connect
     const activeSessions = sessionManager.getActiveSessions();
@@ -644,7 +681,7 @@ async function main(): Promise<void> {
             ws.send(JSON.stringify({ type: "pong" }));
             break;
           case "message":
-            await sessionManager.sendMessage(msg.sessionId, msg.text);
+            await sessionManager.sendMessage(msg.sessionId, msg.text, user);
             break;
           case "new_session": {
             if (!msg.path || typeof msg.path !== "string") {
@@ -761,7 +798,7 @@ async function main(): Promise<void> {
             }
             try {
               const prompt = await handleImage(msg.data, msg.filename);
-              await sessionManager.sendMessage(msg.sessionId, prompt);
+              await sessionManager.sendMessage(msg.sessionId, prompt, user);
             } catch (err) {
               log.error("Image upload failed", {
                 sessionId: msg.sessionId,
@@ -785,7 +822,7 @@ async function main(): Promise<void> {
             }
             try {
               const prompt = await handleFile(msg.data, msg.filename, msg.mimetype);
-              await sessionManager.sendMessage(msg.sessionId, prompt);
+              await sessionManager.sendMessage(msg.sessionId, prompt, user);
             } catch (err) {
               log.error("File upload failed", {
                 sessionId: msg.sessionId,

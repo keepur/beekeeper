@@ -7,7 +7,7 @@ const log = createLogger("beekeeper-team-proxy");
 
 export interface ProxyDevice {
   _id: string;
-  name: string;
+  label: string;
 }
 
 export interface ProxyHandle {
@@ -24,6 +24,8 @@ export interface ProxyTeamConnectionOptions {
   upstreamPingIntervalMs?: number;
   /** Opaque app-identity slug forwarded to hive via the upstream URL. */
   origin?: string;
+  /** Server-asserted user id forwarded to hive via the upstream URL. */
+  user?: string;
 }
 
 const DEFAULT_BACKPRESSURE_THRESHOLD = 4 * 1024 * 1024;
@@ -41,6 +43,12 @@ const DEFAULT_PING_INTERVAL_MS = 30_000;
  * On upstream connect failure, closes the client with code 1011
  * (`hive-unavailable`). Returns a handle so the caller can track the upstream
  * socket and dispose of both sides on revocation.
+ *
+ * URL contract to hive (KPR-21):
+ *   ?internal=1&deviceId=<uuid>&label=<cosmetic>&user=<server-asserted-id>[&origin=<slug>]
+ * The `user` param is authoritative — hive MUST NOT trust any client-supplied
+ * identity field inside forwarded frames and should attach this value to its
+ * agent envelope as the sender.
  */
 export function proxyTeamConnection(
   clientWs: WsWebSocket,
@@ -53,17 +61,20 @@ export function proxyTeamConnection(
   const pingIntervalMs = options.upstreamPingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
 
   const deviceId = (device as BeekeeperDevice)._id ?? (device as ProxyDevice)._id;
-  const deviceName = device.name;
+  const deviceLabel = (device as BeekeeperDevice).label ?? (device as ProxyDevice).label;
 
   const base = hiveEntry.localWsUrl.replace(/\/+$/, "");
   let upstreamUrl =
     base +
     "/?internal=1&deviceId=" +
     encodeURIComponent(deviceId) +
-    "&name=" +
-    encodeURIComponent(deviceName);
+    "&label=" +
+    encodeURIComponent(deviceLabel);
   if (options.origin) {
     upstreamUrl += "&origin=" + encodeURIComponent(options.origin);
+  }
+  if (options.user) {
+    upstreamUrl += "&user=" + encodeURIComponent(options.user);
   }
 
   log.info("Opening team upstream", { deviceId, hive: hiveEntry.name, url: base });
