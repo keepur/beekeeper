@@ -4,6 +4,11 @@ Claude Code session gateway — real development from your phone (or any device)
 
 **Beekeeper** is a WebSocket-based server that wraps the Claude Code Agent SDK, letting you run full-featured development sessions on remote devices. Write code, run commands, approve tool use — all from an iOS app, web client, or any WebSocket-capable device.
 
+## Prerequisites
+
+- **Node 22 or newer** — enforced by `engines.node` in `package.json`.
+- **TLS termination in front of Beekeeper, if you plan to reach it from anywhere other than `localhost`.** Beekeeper serves plain `http` + `ws` by design — it assumes you already have a way to expose its port as an HTTPS/WSS endpoint. How you do that is up to you: Cloudflare Tunnel, Tailscale Funnel, Caddy, nginx, Traefik, stunnel, an ALB, whatever fits your setup. Remote clients including the Keepur iOS app will *not* connect over plain `ws://` — App Transport Security blocks it on iOS, and you don't want unencrypted device tokens on the open internet anyway. **Localhost-only** setups (e.g. testing on the same machine) need nothing extra.
+
 ## Quick Start
 
 Beekeeper is distributed two ways, depending on whether you want auto-updates via `scripts/update.sh`:
