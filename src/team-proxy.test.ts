@@ -98,7 +98,7 @@ function makeHiveEntry(localWsUrl: string): CapabilityEntry {
   };
 }
 
-const DEVICE = { _id: "dev-123", name: "Test Device" };
+const DEVICE = { _id: "dev-123", label: "Test Device" };
 
 function waitOpen(ws: WsWebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -154,7 +154,7 @@ describe("proxyTeamConnection", () => {
     expect(hive.lastInternalUrl).toBeDefined();
     expect(hive.lastInternalUrl).toContain("internal=1");
     expect(hive.lastInternalUrl).toContain("deviceId=dev-123");
-    expect(hive.lastInternalUrl).toContain("name=Test%20Device");
+    expect(hive.lastInternalUrl).toContain("label=Test%20Device");
 
     outgoing.close();
   });
@@ -460,6 +460,29 @@ describe("proxyTeamConnection", () => {
     });
 
     expect(hive.lastInternalUrl).toContain("&origin=weird%20slug%2F1");
+    outgoing.close();
+  });
+
+  it("forwards user on upstream URL when provided", async () => {
+    hive = await startHive();
+    acceptor = await startClientAcceptor();
+
+    const clientSidePromise = acceptor.acceptNext();
+    const outgoing = new WsWebSocket(acceptor.clientUrl);
+    await waitOpen(outgoing);
+    const serverClient = await clientSidePromise;
+
+    proxyTeamConnection(serverClient, DEVICE, makeHiveEntry(hive.url), { user: "mokie" });
+    await new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        if (hive && hive.connections.length > 0) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+    });
+
+    expect(hive.lastInternalUrl).toContain("&user=mokie");
     outgoing.close();
   });
 
