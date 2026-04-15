@@ -112,13 +112,14 @@ export class SessionManager {
     });
   }
 
-  addClient(deviceId: string, ws: WebSocket): void {
+  addClient(deviceId: string, user: string, ws: WebSocket): void {
     let clientSet = this.clients.get(deviceId);
     if (!clientSet) {
       clientSet = new Set();
       this.clients.set(deviceId, clientSet);
     }
     clientSet.add(ws);
+    log.info("Session client attached", { deviceId, user });
     // Drain global buffer to new client
     if (this.globalBuffer.length > 0) {
       log.info("Draining global buffer", { deviceId, count: this.globalBuffer.length });
@@ -256,31 +257,36 @@ export class SessionManager {
   /**
    * Send a message to a specific session.
    */
-  async sendMessage(sessionId: string, text: string): Promise<void> {
+  async sendMessage(sessionId: string, text: string, user: string): Promise<void> {
     const slot = this.sessions.get(sessionId);
     if (!slot) {
       this.send({ type: "error", message: `Unknown session: ${sessionId}`, sessionId });
       return;
     }
 
-    // Slash command detection — runs BEFORE busy check
+    // Slash commands run locally and don't go to the SDK — no header.
     if (text.startsWith("/")) {
       const parts = text.trimEnd().split(/\s+/);
       const name = parts[0].slice(1).toLowerCase();
       const cmd = this.commands.get(name);
       if (cmd) {
-        log.info("Executing slash command", { sessionId, command: name });
+        log.info("Running slash command", { sessionId, user, command: name });
         await cmd.handler(sessionId, parts.slice(1), slot);
         return;
       }
-      // Unknown command — fall through to SDK as normal text
+      // Unknown command — fall through to the SDK as normal text (with header).
     }
 
     if (slot.state === "busy") {
       this.send({ type: "status", state: "busy", sessionId });
       return;
     }
-    const done = this.runQuery(slot, text);
+
+    // KPR-21: server-asserted identity header. This is the ONLY place the
+    // agent learns who it's talking to; the client cannot influence `user`
+    // because it's re-asserted from the WS auth context on every message.
+    const prompt = `<from user="${user}">\n${text}`;
+    const done = this.runQuery(slot, prompt);
     slot.queryDone = done;
     await done;
   }
