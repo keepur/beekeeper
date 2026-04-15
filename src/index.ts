@@ -130,6 +130,7 @@ async function main(): Promise<void> {
             token: result.token,
             deviceId: result.device._id,
             label: result.device.label,
+            deviceName: result.device.label,
             user: result.device.userId,
             capabilities: capabilities.list(),
           }),
@@ -224,7 +225,7 @@ async function main(): Promise<void> {
         }
         const { device, user } = auth;
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deviceId: device._id, label: device.label, user }));
+        res.end(JSON.stringify({ deviceId: device._id, label: device.label, name: device.label, user }));
       } catch (err) {
         log.error("GET /me error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -263,7 +264,8 @@ async function main(): Promise<void> {
         }
         const updated = deviceRegistry.updateDevice(device._id, { label });
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deviceId: device._id, label: updated?.label ?? label, user }));
+        const finalLabel = updated?.label ?? label;
+        res.end(JSON.stringify({ deviceId: device._id, label: finalLabel, name: finalLabel, user }));
       } catch (err) {
         log.error("PUT /me error", { error: String(err) });
         res.writeHead(500, { "Content-Type": "application/json" });
@@ -311,6 +313,7 @@ async function main(): Promise<void> {
           JSON.stringify({
             deviceId: device._id,
             label: device.label,
+            name: device.label,
             user: device.userId,
             pairingCode: device.pairingCode,
             expiresAt: device.pairingCodeExpiresAt,
@@ -336,6 +339,7 @@ async function main(): Promise<void> {
         const list = devices.map((d) => ({
           deviceId: d._id,
           label: d.label,
+          name: d.label,
           user: d.userId,
           active: d.active,
           paired: !!d.pairedAt,
@@ -374,6 +378,7 @@ async function main(): Promise<void> {
             JSON.stringify({
               deviceId: device._id,
               label: device.label,
+              name: device.label,
               user: device.userId,
               active: device.active,
               paired: !!device.pairedAt,
@@ -419,7 +424,7 @@ async function main(): Promise<void> {
             return;
           }
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ deviceId: device._id, label: device.label, user: device.userId }));
+          res.end(JSON.stringify({ deviceId: device._id, label: device.label, name: device.label, user: device.userId }));
         } catch (err) {
           log.error("Update device error", { error: String(err) });
           res.writeHead(500, { "Content-Type": "application/json" });

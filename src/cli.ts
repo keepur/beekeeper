@@ -104,7 +104,7 @@ switch (command) {
           } else {
             console.log(`Removed user: ${id}`);
             console.log(
-              "Warning: all of their devices' tokens are now invalid — they'll need to re-pair if reactivated.",
+              "Their devices' tokens are rejected while the user is inactive. Re-running `beekeeper user add` with the same id reactivates the user and their existing tokens resume working.",
             );
           }
         }
