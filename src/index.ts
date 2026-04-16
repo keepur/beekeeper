@@ -525,10 +525,12 @@ async function main(): Promise<void> {
       const { device, user } = authResult;
 
       // Parse channel query param — defaults to "beekeeper" for backwards compat.
-      const channel = url.searchParams.get("channel") ?? "beekeeper";
-      if (channel !== "beekeeper" && channel !== "team") {
-        log.warn("WebSocket upgrade rejected — invalid channel", { channel });
-        socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+      // "team" is a legacy alias for "hive" (older iOS clients).
+      const rawChannel = url.searchParams.get("channel") ?? "beekeeper";
+      const channel = rawChannel === "team" ? "hive" : rawChannel;
+      if (channel !== "beekeeper" && !capabilities.get(channel)) {
+        log.warn("WebSocket upgrade rejected — unknown capability", { channel });
+        socket.write("HTTP/1.1 503 hive-unavailable\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -543,12 +545,8 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (channel === "team" && capabilities.get("hive") === undefined) {
-        log.warn("WebSocket upgrade rejected — hive-unavailable", { deviceId: device._id });
-        socket.write("HTTP/1.1 503 hive-unavailable\r\n\r\n");
-        socket.destroy();
-        return;
-      }
+      // Channel validation already handled above — capabilities.get(channel)
+      // confirmed the capability exists for non-beekeeper channels.
 
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, device, user, channel, origin);
@@ -566,7 +564,7 @@ async function main(): Promise<void> {
     ws: WebSocket,
     device: BeekeeperDevice,
     user: string,
-    channel: "beekeeper" | "team" = "beekeeper",
+    channel: string = "beekeeper",
     origin?: string,
   ) => {
     log.info("Client connected", { deviceId: device._id, label: device.label, user, channel });
@@ -589,15 +587,15 @@ async function main(): Promise<void> {
       log.warn("Failed to update lastSeenAt", { error: String(err) });
     }
 
-    // Team channel: transparent proxy to Hive. No session manager, no
-    // beekeeper message loop — just wire up the proxy and install lifecycle
-    // hooks to keep connectedClients consistent.
-    if (channel === "team") {
-      const hiveEntry = capabilities.get("hive");
+    // Non-beekeeper channel: transparent proxy to the registered capability.
+    // No session manager, no beekeeper message loop — just wire up the proxy
+    // and install lifecycle hooks to keep connectedClients consistent.
+    if (channel !== "beekeeper") {
+      const hiveEntry = capabilities.get(channel);
       if (!hiveEntry) {
-        // Defensive: upgrade handler already gates on this, but if hive
-        // dropped between upgrade and connection, close cleanly.
-        log.warn("team channel connection with no hive capability — closing", { deviceId: device._id });
+        // Defensive: upgrade handler already gates on this, but if the
+        // capability dropped between upgrade and connection, close cleanly.
+        log.warn("capability unavailable at connection time — closing", { deviceId: device._id, channel });
         ws.close(1011, "hive-unavailable");
         clientSet.delete(conn);
         if (clientSet.size === 0) connectedClients.delete(device._id);
