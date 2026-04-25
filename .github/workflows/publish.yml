@@ -11,13 +11,17 @@ name: Publish to npm
 #   shell line, so a malicious tag name cannot break out of quoting.
 #   See the SAFE pattern in
 #   https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
-# - npm auth is NOT configured via a repo secret — this workflow runs
-#   on a self-hosted macOS runner (user `mokie`) that already has a
-#   long-lived npm login token in `~/.npmrc`, so `npm publish` picks
-#   up auth from ambient state. If you ever move the runner to a
-#   different host/user/container, add an `NPM_TOKEN` repo secret and
-#   a `Configure npm auth` step that writes it to a workspace `.npmrc`
-#   before the `Publish` step — until then, keep it simple.
+# - npm auth comes from the `NPM_TOKEN` repo secret. The "Configure npm
+#   auth" step writes it to a workspace-local `.npmrc` immediately
+#   before `npm publish`, which scopes the credential to one job and
+#   never touches the runner's `~/.npmrc`. The token is an npm
+#   "Automation" type so 2FA prompts don't block CI. Rotate by
+#   re-issuing on npmjs.com → Access Tokens and updating the secret
+#   via `gh secret set NPM_TOKEN`.
+#   Background: this replaced ambient `~/.npmrc` auth on 2026-04-25
+#   after the runner's long-lived login silently expired between v1.0.1
+#   and v1.0.2 (npm returns 404 on expired scope auth, not 401, which
+#   was a confusing first failure mode).
 # - Tag pushes aren't covered by branch protection on `main`, so only
 #   principals who can push to the repo can trigger this workflow.
 
@@ -61,6 +65,19 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Configure npm auth
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN secret is not set"
+            exit 1
+          fi
+          # Workspace-local .npmrc — scoped to this job, gone after teardown.
+          # Single-quoted heredoc so the token isn't interpolated at write time.
+          umask 077
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > .npmrc
 
       - name: Publish
         run: npm publish --access public
