@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync, mkdirSync, unlinkSync, existsSync, chmodSync } from "node:fs";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync, chmodSync, copyFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "../logging/logger.js";
@@ -28,6 +28,45 @@ function resolveIndexPath(): string {
  */
 function resolveRepoRoot(): string {
   return resolve(import.meta.dirname, "../..");
+}
+
+/**
+ * Path to the bundled `beekeeper.yaml.example`. It ships at the package root
+ * (declared in `package.json#files`) for both source checkouts and npm
+ * installs. May not exist in unusual packaging — callers must check.
+ */
+function resolveExampleConfigPath(): string {
+  return join(resolveRepoRoot(), "beekeeper.yaml.example");
+}
+
+/**
+ * Seed `<configDir>/beekeeper.yaml` if it doesn't already exist. Re-running
+ * `beekeeper install` on a configured machine never overwrites the user's
+ * config — that's the same idempotence the rest of install relies on.
+ *
+ * Source preference: copy the bundled example so the seed includes the same
+ * commented documentation users would see in the README. If the example is
+ * missing (custom packaging, manual edit), write a minimal two-line config
+ * so the LaunchAgent can still boot — server-side defaults fill the rest.
+ */
+export function seedConfigIfMissing(configDir: string): {
+  path: string;
+  created: boolean;
+  source: "example" | "minimal" | null;
+} {
+  const target = join(configDir, "beekeeper.yaml");
+  if (existsSync(target)) return { path: target, created: false, source: null };
+
+  mkdirSync(configDir, { recursive: true });
+
+  const example = resolveExampleConfigPath();
+  if (existsSync(example)) {
+    copyFileSync(example, target);
+    return { path: target, created: true, source: "example" };
+  }
+
+  writeFileSync(target, "port: 8420\nmodel: claude-opus-4-6\n");
+  return { path: target, created: true, source: "minimal" };
 }
 
 /**
@@ -171,6 +210,11 @@ export function install(configDir?: string): void {
   const logDir = join(workDir, "logs");
   mkdirSync(logDir, { recursive: true });
 
+  const seed = seedConfigIfMissing(workDir);
+  if (seed.created) {
+    log.info("Seeded beekeeper.yaml", { path: seed.path, source: seed.source });
+  }
+
   const envFile = join(workDir, "env");
   const useWrapper = existsSync(envFile);
   let wrapperPath: string | undefined;
@@ -193,6 +237,12 @@ export function install(configDir?: string): void {
   writeFileSync(plistPath, plistContent);
   log.info("Plist installed", { path: plistPath, wrapper: useWrapper });
 
+  if (seed.created) {
+    const origin = seed.source === "example" ? "beekeeper.yaml.example" : "minimal defaults";
+    console.log(`Wrote ${seed.path} (from ${origin}). Edit it before first launch to set workspaces and other settings.`);
+  } else {
+    console.log(`Existing config: ${seed.path}`);
+  }
   console.log(`LaunchAgent installed: ${plistPath}`);
   if (useWrapper) {
     console.log(`Wrapper script: ${wrapperPath}`);

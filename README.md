@@ -41,11 +41,17 @@ The build compiles TypeScript to `dist/` and produces the `dist/cli.js` entry po
 
 ### 2. Create a config directory
 
+If you plan to run beekeeper as a LaunchAgent (see [macOS LaunchAgent Setup](#macos-launchagent-setup)), `beekeeper install` will seed `~/.beekeeper/beekeeper.yaml` from the bundled example for you — you can skip this step and edit the file afterward.
+
+Otherwise, create the config manually:
+
 ```bash
 mkdir -p ~/.beekeeper
 cp beekeeper.yaml.example ~/.beekeeper/beekeeper.yaml
 # edit ~/.beekeeper/beekeeper.yaml as needed (port, model, workspaces)
 ```
+
+> Installed via `npm install -g @keepur/beekeeper`? The example ships inside the package, so use `beekeeper install` to seed the config, or copy from `$(npm root -g)/@keepur/beekeeper/beekeeper.yaml.example`.
 
 ### 3. Set environment variables
 
@@ -226,6 +232,8 @@ beekeeper install ~/.beekeeper
 ```
 
 This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeper.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`).
+
+On a fresh machine, `beekeeper install` also seeds `<configDir>/beekeeper.yaml` from the bundled example if no config exists yet — so you don't have to find the example file inside the npm package. It never overwrites an existing config, so re-running install is still safe.
 
 **Two install modes, auto-selected:**
 

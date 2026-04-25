@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { dirname, resolve } from "node:path";
-import { generatePlist } from "./generate-plist.js";
+import { dirname, join, resolve } from "node:path";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { generatePlist, seedConfigIfMissing } from "./generate-plist.js";
 
 describe("generatePlist", () => {
   const baseOptions = {
@@ -59,6 +61,45 @@ describe("generatePlist", () => {
     // And the raw characters should NOT appear (they'd produce invalid XML).
     expect(xml).not.toContain("/tmp/has & ampersand");
     expect(xml).not.toContain("/tmp/has <angle>");
+  });
+});
+
+describe("seedConfigIfMissing", () => {
+  it("copies the bundled example into a fresh configDir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beekeeper-seed-"));
+    const result = seedConfigIfMissing(dir);
+    expect(result.created).toBe(true);
+    expect(result.source).toBe("example");
+    expect(result.path).toBe(join(dir, "beekeeper.yaml"));
+    expect(existsSync(result.path)).toBe(true);
+
+    // Content should match the bundled example byte-for-byte.
+    const exampleSrc = resolve(
+      dirname(new URL(import.meta.url).pathname),
+      "..",
+      "..",
+      "beekeeper.yaml.example",
+    );
+    expect(readFileSync(result.path, "utf-8")).toBe(readFileSync(exampleSrc, "utf-8"));
+  });
+
+  it("never overwrites an existing beekeeper.yaml", () => {
+    const dir = mkdtempSync(join(tmpdir(), "beekeeper-seed-"));
+    const target = join(dir, "beekeeper.yaml");
+    writeFileSync(target, "port: 9999\n");
+    const result = seedConfigIfMissing(dir);
+    expect(result.created).toBe(false);
+    expect(result.source).toBeNull();
+    expect(readFileSync(target, "utf-8")).toBe("port: 9999\n");
+  });
+
+  it("creates configDir if missing", () => {
+    const parent = mkdtempSync(join(tmpdir(), "beekeeper-seed-"));
+    const dir = join(parent, "nested", "deep");
+    expect(existsSync(dir)).toBe(false);
+    const result = seedConfigIfMissing(dir);
+    expect(result.created).toBe(true);
+    expect(existsSync(result.path)).toBe(true);
   });
 });
 
