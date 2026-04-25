@@ -104,7 +104,14 @@ export function loadConfig(): BeekeeperConfig {
 
   const configPath = resolve(process.env.BEEKEEPER_CONFIG ?? "./beekeeper.yaml");
   if (!existsSync(configPath)) {
-    throw new Error(`Beekeeper config not found: ${configPath}`);
+    // The npm-install path doesn't include an obvious "create this file"
+    // step, so tell the user exactly how to seed one. `beekeeper install`
+    // copies the example into ~/.beekeeper/beekeeper.yaml automatically.
+    const example = resolve(import.meta.dirname, "..", "beekeeper.yaml.example");
+    const hint = existsSync(example)
+      ? `Run \`beekeeper install\` to seed one, or copy the example: cp ${example} ${configPath}`
+      : `Run \`beekeeper install\` to seed one.`;
+    throw new Error(`Beekeeper config not found: ${configPath}\n${hint}`);
   }
 
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
