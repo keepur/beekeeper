@@ -2,6 +2,7 @@ node_modules/
 dist/
 beekeeper.yaml
 .env
+.npmrc
 *.db
 *.key.salt
 .claude/
