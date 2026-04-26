@@ -4,7 +4,7 @@ import { resolveRepo } from "../repo-resolver.js";
 import { blockHuman, type HandlerContext, type HandlerResult } from "./types.js";
 import type { TicketAttachment, TicketComment } from "../types.js";
 
-const REVIEWER_OUTPUT_HEAD = /```json\s*\{[\s\S]*?"verdict"\s*:/;
+export const REVIEWER_OUTPUT_HEAD = /```json\s*\{[\s\S]*?"verdict"\s*:/;
 // Match only spawn-logs with kind=code-review. Prior-state spawn-logs
 // (drafting, pickup) may still be in the comment history when a ticket
 // reaches In Review; without the kind filter we'd treat any old spawn-log
