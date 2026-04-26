@@ -34,4 +34,20 @@ export class AppliedFramesStore {
       .toArray();
     return docs.map((d) => d._id);
   }
+
+  async findClaimsForSkill(bundle: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll.find({ "resources.skills.bundle": bundle }).toArray();
+  }
+
+  async findClaimsForSchedule(agentId: string, task: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll
+      .find({ [`resources.schedule.${agentId}.task`]: task })
+      .toArray();
+  }
+
+  async findClaimsForSeedAgent(agentId: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll
+      .find({ "resources.memorySeeds.agent": agentId })
+      .toArray();
+  }
 }
