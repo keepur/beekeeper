@@ -1416,6 +1416,12 @@ import type { TicketComment } from "./types.js";
 
 const PIPELINE_PREFIXES = ["tick-lock-claim:", "tick-lock-release:", "tick-spawn-log:"];
 
+// Block-diagnostic comments are tick-authored too. They start with the label
+// name + " — " (em dash). Treat them as pipeline comments for the unblock-evidence
+// check so removing a block label without a separate operator comment correctly
+// re-applies the block.
+const BLOCK_DIAGNOSTIC_PREFIXES = ["block:human —", "block:external —", "block:ci —"];
+
 /**
  * Per spec §"Default unblock flow": for `block:human` and `block:external`,
  * the operator must post a non-pipeline comment between the original block
@@ -1443,6 +1449,8 @@ export function hasUnblockEvidence(comments: TicketComment[]): boolean {
     const c = sorted[i];
     const trimmed = c.body.trim();
     if (PIPELINE_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
+    // Tick-authored block-diagnostic comments are not operator evidence either.
+    if (BLOCK_DIAGNOSTIC_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
     return true;
   }
   return false;
@@ -1480,6 +1488,16 @@ describe("hasUnblockEvidence", () => {
 
   it("returns false on empty comment list", () => {
     expect(hasUnblockEvidence([])).toBe(false);
+  });
+
+  it("returns false when only the tick's own block-diagnostic comment is present (operator removed label without evidence)", () => {
+    expect(
+      hasUnblockEvidence([
+        c("tick-lock-claim: runId=tick-1 action=draft-plan", "2026-04-26T00:00:00.000Z"),
+        c("block:human — could not resolve target repo from ticket description", "2026-04-26T00:01:00.000Z"),
+        c("tick-lock-release: runId=tick-1 outcome=skipped", "2026-04-26T00:01:30.000Z"),
+      ]),
+    ).toBe(false);
   });
 });
 ```
@@ -2505,6 +2523,19 @@ export async function handlePickup(ctx: HandlerContext): Promise<HandlerResult> 
   }
 
   const planPath = `docs/plans/${ctx.ticket.identifier.toLowerCase()}.md`;
+  // Per spec §"Pickup action" item 1: refuse to pick up if the plan only
+  // exists in the operator's working tree, not committed to the repo branch
+  // the implementer's worktree will resolve. Without this guard, the
+  // implementer subagent gets a non-existent plan path and fails late.
+  const planAbs = `${repo.path}/${planPath}`;
+  if (!existsSync(planAbs)) {
+    return blockHuman(
+      ctx.client,
+      ctx.ticket,
+      `plan file not found at ${planPath} — ensure plan is committed to the epic branch before pickup`,
+    );
+  }
+
   const prompt = buildImplementerPrompt({
     ticketId: ctx.ticket.identifier,
     repoPath: repo.path,
@@ -2952,11 +2983,21 @@ export async function runTick(opts: RunTickOptions): Promise<TickReport> {
     }
 
     entries.push({ ticket: id, decision, outcome: result.outcome, detail: result.detail });
-    await release(client, id, runId, {
-      outcome: result.outcome === "transitioned" ? "transitioned"
-              : result.outcome === "spawned" ? "spawned"
-              : "skipped",
-    });
+    // Best-effort release. If the release write itself fails (e.g., transient
+    // Linear API blip after the handler ran), log and move on — the 60s claim
+    // TTL bounds how long the lock persists. Do not let a release failure
+    // mask the per-ticket outcome we already recorded.
+    try {
+      await release(client, id, runId, {
+        outcome: result.outcome === "transitioned" ? "transitioned"
+                : result.outcome === "spawned" ? "spawned"
+                : "skipped",
+      });
+    } catch (err) {
+      log.warn("Lock release write failed; lock will clear on TTL", {
+        runId, ticket: id, error: String(err),
+      });
+    }
   }
 
   return {
@@ -2980,7 +3021,11 @@ async function resolveScope(client: LinearClient, scope: string): Promise<string
   // epic, expand to its children. We try children first; if the API returns
   // none, treat the scope as a single-ticket reference.
   const children = await safeListChildren(client, scope);
-  if (children.length > 0) return [scope, ...children];
+  // When scope is an epic, expand to its children only — do NOT include the
+  // epic itself in the processed list. Epics typically have no PR of their own
+  // and would otherwise consume an action-budget slot for a guaranteed skip,
+  // and produce a spurious entry in the report.
+  if (children.length > 0) return children;
   return [scope];
 }
 
