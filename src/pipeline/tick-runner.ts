@@ -121,7 +121,7 @@ export async function runTick(opts: RunTickOptions): Promise<TickReport> {
 
     if (result.agentId) {
       try {
-        await logSpawn(client, id, runId, result.agentId);
+        await logSpawn(client, id, runId, result.agentId, decision.kind);
       } catch (err) {
         log.warn("Spawn-log write failed", { runId, ticket: id, error: String(err) });
       }

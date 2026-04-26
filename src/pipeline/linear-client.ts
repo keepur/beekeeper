@@ -94,8 +94,11 @@ export class LinearClient {
       title: a.title,
     }));
 
+    // On an inverseRelation, this ticket IS the relation's relatedIssue (target).
+    // The blocker we want is the relation's source — `rel.issue` — not
+    // `rel.relatedIssue` (which would resolve back to this same ticket).
     const blockedBy: string[] = await Promise.all(
-      blockedByRelations.map(async (rel) => (await rel.relatedIssue)?.identifier ?? ""),
+      blockedByRelations.map(async (rel) => (await rel.issue)?.identifier ?? ""),
     ).then((arr) => arr.filter((s) => s.length > 0));
 
     const state = stateRel ? ((await stateRel).name as WorkflowState) : "Backlog";

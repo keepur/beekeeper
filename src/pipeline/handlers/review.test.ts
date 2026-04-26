@@ -85,7 +85,7 @@ describe("handleReview", () => {
     const comments: TicketComment[] = [
       {
         id: "c-spawn",
-        body: "tick-spawn-log: runId=tick-1 agentId=agent-01ABC",
+        body: "tick-spawn-log: runId=tick-1 agentId=agent-01ABC kind=code-review",
         createdAt: new Date().toISOString(),
       },
     ];

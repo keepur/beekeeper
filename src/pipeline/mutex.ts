@@ -92,11 +92,13 @@ export async function logSpawn(
   ticketId: string,
   runId: string,
   agentId: string,
+  /** Action kind that produced the spawn — drives state-specific spawn-log lookups. */
+  kind: string,
 ): Promise<void> {
   const issue = await client.getTicketState(ticketId);
   await client.addComment(
     issue.id,
-    `${SPAWN_PREFIX} runId=${runId} agentId=${agentId}`,
+    `${SPAWN_PREFIX} runId=${runId} agentId=${agentId} kind=${kind}`,
   );
 }
 
