@@ -585,7 +585,7 @@ export class SessionManager {
     const apiKey = resolveBeekeeperSecret("LINEAR_API_KEY");
     if (!apiKey || !this.config.pipeline) {
       const missing: string[] = [];
-      if (!apiKey) missing.push("LINEAR_API_KEY env var");
+      if (!apiKey) missing.push("LINEAR_API_KEY (set in env or via `honeypot set beekeeper/LINEAR_API_KEY <value>`)");
       if (!this.config.pipeline) missing.push("'pipeline:' block in beekeeper.yaml");
       this.send({
         type: "message",

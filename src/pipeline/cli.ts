@@ -35,7 +35,7 @@ export async function runPipelineCli(inputs: PipelineCliInputs): Promise<Pipelin
     return { exitCode: 1, output: out, errors: err };
   }
   if (!inputs.apiKey) {
-    err.push("pipeline-tick: missing LINEAR_API_KEY env var");
+    err.push("pipeline-tick: missing LINEAR_API_KEY (set in env or via `honeypot set beekeeper/LINEAR_API_KEY <value>`)");
     return { exitCode: 1, output: out, errors: err };
   }
 

@@ -24,21 +24,36 @@ describe("readBeekeeperSecret", () => {
     expect(args).toEqual([
       "find-generic-password",
       "-s",
-      "honeypot",
-      "-a",
       "beekeeper/LINEAR_API_KEY",
+      "-a",
+      "LINEAR_API_KEY",
       "-w",
     ]);
     expect(opts.encoding).toBe("utf-8");
     expect(opts.stdio).toEqual(["ignore", "pipe", "ignore"]);
   });
 
-  it("returns undefined when execFileSync throws (key not found)", async () => {
+  it("returns undefined when execFileSync throws status=44 (key not found)", async () => {
     execFileSyncMock.mockImplementation(() => {
-      throw new Error("The specified item could not be found in the keychain.");
+      const err = new Error("The specified item could not be found in the keychain.");
+      (err as Error & { status?: number }).status = 44;
+      throw err;
     });
     const { readBeekeeperSecret } = await import("./honeypot-reader.js");
     expect(readBeekeeperSecret("MISSING_KEY")).toBeUndefined();
+  });
+
+  it("returns undefined and logs when execFileSync throws non-44 status (unexpected)", async () => {
+    execFileSyncMock.mockImplementation(() => {
+      const err = new Error("permission denied");
+      (err as Error & { status?: number }).status = 1;
+      throw err;
+    });
+    const { readBeekeeperSecret } = await import("./honeypot-reader.js");
+    // Returns undefined gracefully so the caller's missing-key guard can fire;
+    // the warn log is emitted as a side effect (verifying the log call would
+    // require mocking the logger, which is out of scope for this test).
+    expect(readBeekeeperSecret("UNREACHABLE_KEY")).toBeUndefined();
   });
 
   it("returns the trimmed value when execFileSync resolves with a trailing newline", async () => {
