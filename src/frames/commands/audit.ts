@@ -6,11 +6,51 @@ import { AppliedFramesStore } from "../applied-frames-store.js";
 import { collectAnchorSet } from "../anchor-resolver.js";
 import type { AppliedFrameRecord } from "../types.js";
 
-interface AuditFinding {
+export interface AuditFinding {
   frame: string;
   resource: string;
   kind: "missing-anchor" | "missing-seed";
   detail: string;
+}
+
+export interface AuditSummary {
+  exitCode: 0 | 1;
+  message: string;
+}
+
+/**
+ * Pure helper: derive the audit exit code + console message from records and findings.
+ *
+ * Exit codes:
+ * - 0 when no frames are applied (nothing to audit) or when no findings exist (clean).
+ * - 1 when one or more drift findings exist — non-zero so CI / `frame audit` callers
+ *   can gate on drift.
+ */
+export function summarizeAudit(
+  instanceId: string,
+  recordCount: number,
+  findings: AuditFinding[],
+): AuditSummary {
+  if (recordCount === 0) {
+    return {
+      exitCode: 0,
+      message: `No frames applied to "${instanceId}". Nothing to audit.`,
+    };
+  }
+  if (findings.length === 0) {
+    return {
+      exitCode: 0,
+      message: `Audit clean: ${recordCount} frame(s) applied, no drift detected.`,
+    };
+  }
+  const lines = [`Audit found ${findings.length} drift item(s):`, ""];
+  for (const f of findings) {
+    lines.push(`  [${f.kind}] ${f.frame} -> ${f.resource}: ${f.detail}`);
+  }
+  return {
+    exitCode: 1,
+    message: lines.join("\n"),
+  };
 }
 
 export async function auditInstance(instanceId: string): Promise<number> {
@@ -20,26 +60,15 @@ export async function auditInstance(instanceId: string): Promise<number> {
   return await withInstanceDb(instance, async (db) => {
     const store = new AppliedFramesStore(db);
     const records = await store.list();
-    if (records.length === 0) {
-      console.log(`No frames applied to "${instanceId}". Nothing to audit.`);
-      return 0;
-    }
 
     const findings: AuditFinding[] = [];
     for (const rec of records) {
       findings.push(...(await auditFrame(db, rec)));
     }
 
-    if (findings.length === 0) {
-      console.log(`Audit clean: ${records.length} frame(s) applied, no drift detected.`);
-      return 0;
-    }
-
-    console.log(`Audit found ${findings.length} drift item(s):\n`);
-    for (const f of findings) {
-      console.log(`  [${f.kind}] ${f.frame} -> ${f.resource}: ${f.detail}`);
-    }
-    return 0;
+    const summary = summarizeAudit(instanceId, records.length, findings);
+    console.log(summary.message);
+    return summary.exitCode;
   });
 }
 
