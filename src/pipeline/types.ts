@@ -3,7 +3,9 @@
 export type TypeLabel = "type:trivial" | "type:plan-only" | "type:spec-and-plan" | "type:research";
 export type BlockLabel = "block:human" | "block:ci" | "block:external";
 export type QaLabel = "qa:meta-review-due" | "qa:rollback";
-export type PipelineLabel = TypeLabel | BlockLabel | QaLabel | "pipeline-auto" | "epic";
+/** Open-namespace `repo:<name>` label used by the pipeline-tick repo resolver. */
+export type RepoLabel = `repo:${string}`;
+export type PipelineLabel = TypeLabel | BlockLabel | QaLabel | RepoLabel | "pipeline-auto" | "epic";
 
 /** Linear workflow state names per `reference_pipeline_taxonomy.md`. */
 export type WorkflowState =
