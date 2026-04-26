@@ -32,6 +32,8 @@ export interface TicketAttachment {
   url: string;
   /** GitHub PR URLs are auto-attached by Linear's GitHub integration. */
   title?: string;
+  /** ISO timestamp from Linear; required by orchestrator startup-recovery PR-attachment ordering. */
+  createdAt: string;
 }
 
 /** Joined ticket state — the action-dispatcher's input. */

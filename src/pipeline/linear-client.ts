@@ -11,6 +11,10 @@ import { createLogger } from "../logging/logger.js";
 
 const log = createLogger("pipeline-linear");
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface LinearClientOptions {
   apiKey: string;
   teamKey: string;
@@ -92,6 +96,7 @@ export class LinearClient {
       id: a.id,
       url: a.url,
       title: a.title,
+      createdAt: a.createdAt.toISOString(),
     }));
 
     // On an inverseRelation, this ticket IS the relation's relatedIssue (target).
@@ -153,12 +158,24 @@ export class LinearClient {
   }
 
   async addComment(issueId: string, body: string): Promise<{ id: string; createdAt: string }> {
-    const result = await this.sdk.createComment({ issueId, body });
-    if (!result.success || !result.comment) {
-      throw new Error("Failed to create Linear comment");
+    const attempt = async () => {
+      const result = await this.sdk.createComment({ issueId, body });
+      if (!result.success || !result.comment) {
+        throw new Error("Failed to create Linear comment");
+      }
+      const c = await result.comment;
+      return { id: c.id, createdAt: c.createdAt.toISOString() };
+    };
+    try {
+      return await attempt();
+    } catch (err) {
+      log.warn("addComment first attempt failed; retrying after backoff", {
+        issueId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await sleep(1000);
+      return await attempt(); // second failure propagates
     }
-    const c = await result.comment;
-    return { id: c.id, createdAt: c.createdAt.toISOString() };
   }
 
   async setState(issueId: string, state: WorkflowState): Promise<void> {
