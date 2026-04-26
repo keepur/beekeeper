@@ -283,12 +283,20 @@ Conversational per-finding resolution. Beekeeper-conversational UX is documented
     finding: DriftFinding;
     mergedText?: string;
   }
+  export interface DialogReturn {
+    results: DialogResult[];
+    /** New decisions appended in this session, in the order they were $push-ed.
+     *  Caller concatenates with the existingDecisions snapshot taken before the
+     *  dialog ran, then stages the combined array on the AppliedFrameRecord
+     *  before the upsert in Task 7 step 7. */
+    newDecisions: DriftDecision[];
+  }
   export async function runDriftDialog(
     db: Db,
     record: AppliedFrameRecord,
     findings: DriftFinding[],
     opts: { yes: boolean; actor: string },
-  ): Promise<DialogResult[]>
+  ): Promise<DialogReturn>
   ```
 
   Behaviour:
