@@ -1432,4 +1432,17 @@ describe("SessionManager", () => {
       expect(slot?.lastActivityAt).toBeGreaterThan(Date.now() - 5000);
     });
   });
+
+  describe("/pipeline-tick command registration", () => {
+    it("registers the pipeline-tick command on construction", () => {
+      const sm = new SessionManager(
+        makeConfig({ pipeline: { linearTeamKey: "KPR" } }),
+        guardian,
+        questionRelayer,
+      );
+      const commands = (sm as unknown as { commands: Map<string, { description: string }> }).commands;
+      expect(commands.has("pipeline-tick")).toBe(true);
+      expect(commands.get("pipeline-tick")?.description).toMatch(/pipeline-tick/i);
+    });
+  });
 });
