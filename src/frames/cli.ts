@@ -3,6 +3,15 @@ import { listFrames } from "./commands/list.js";
 export async function runFrameCli(args: string[]): Promise<number> {
   const sub = args[0];
   switch (sub) {
+    case "audit": {
+      const instanceId = args[1];
+      if (!instanceId) {
+        console.error("Usage: beekeeper frame audit <instance>");
+        return 1;
+      }
+      const { auditInstance } = await import("./commands/audit.js");
+      return await auditInstance(instanceId);
+    }
     case "list": {
       const instanceId = args[1];
       if (!instanceId) {
