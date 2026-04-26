@@ -45,8 +45,7 @@ export async function writeSkillBundle(
   const src = join(manifest.rootPath, bundle);
   const dest = join(servicePath, "skills", basename(bundle));
 
-  cpSync(src, dest, { recursive: true });
-  const sha = computeBundleHash(dest);
+  const sha = computeBundleHash(src);
 
   const peers = (await store.findClaimsForSkill(bundle)).filter((p) => p._id !== manifest.name);
   let replacedClaimFrom: string | null = null;
@@ -63,6 +62,8 @@ export async function writeSkillBundle(
     }
     replacedClaimFrom = peer._id;
   }
+
+  cpSync(src, dest, { recursive: true });
 
   return { bundle, sha256: sha, replacedClaimFrom };
 }
