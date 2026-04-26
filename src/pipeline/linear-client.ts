@@ -97,8 +97,22 @@ export class LinearClient {
     // On an inverseRelation, this ticket IS the relation's relatedIssue (target).
     // The blocker we want is the relation's source — `rel.issue` — not
     // `rel.relatedIssue` (which would resolve back to this same ticket).
+    //
+    // Filter out blockers that are already Done/Canceled — once a blocker is
+    // resolved it no longer blocks the dependent. Without this filter, tickets
+    // stay "blocked" forever after their dependencies merge, which is the
+    // opposite of what blockedBy is supposed to model.
     const blockedBy: string[] = await Promise.all(
-      blockedByRelations.map(async (rel) => (await rel.issue)?.identifier ?? ""),
+      blockedByRelations.map(async (rel) => {
+        const blocker = await rel.issue;
+        if (!blocker) return "";
+        const blockerState = await blocker.state;
+        const stateType = blockerState?.type;
+        // Linear state types: "completed" (Done) and "canceled" (Canceled/Duplicate)
+        // mean the blocker is resolved; the dependent is no longer blocked by it.
+        if (stateType === "completed" || stateType === "canceled") return "";
+        return blocker.identifier ?? "";
+      }),
     ).then((arr) => arr.filter((s) => s.length > 0));
 
     const state = stateRel ? ((await stateRel).name as WorkflowState) : "Backlog";
