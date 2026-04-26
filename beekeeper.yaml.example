@@ -23,3 +23,12 @@ confirm_operations:
   - "git reset --hard"
   - "git checkout -- ."
   - "git clean -f"
+
+# Hive instances managed by this Beekeeper. Used by `beekeeper frame ...`.
+# instanceId is the key; servicePath is the deployed instance directory.
+# mongoUri defaults to mongodb://localhost:27017; dbName defaults to hive_<instanceId>.
+instances:
+  dodi:
+    servicePath: /Users/youruser/services/hive/dodi
+  keepur:
+    servicePath: /Users/youruser/services/hive/keepur
