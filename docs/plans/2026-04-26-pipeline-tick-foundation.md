@@ -3605,7 +3605,7 @@ The following are explicitly deferred to subsequent plans (Phase 2+ in the spec)
 | `action-dispatcher.test.ts` | 16 | Unit (one per action-table row) |
 | `mutex.test.ts` | 7 | Unit (mocked client) |
 | `reviewer-parser.test.ts` | 7 | Unit |
-| `block-evidence.test.ts` | 3 | Unit |
+| `block-evidence.test.ts` | 5 | Unit |
 | `budget.test.ts` | 4 | Unit |
 | `repo-resolver.test.ts` | 3 | Unit |
 | `subagent-spawn.test.ts` | 2 | Unit (mocked `node:child_process.spawn`) |
