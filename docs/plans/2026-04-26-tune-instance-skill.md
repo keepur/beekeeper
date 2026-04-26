@@ -34,7 +34,6 @@
 | File | Reason |
 |---|---|
 | `src/service/generate-plist.ts` | `install()` calls the new `installSkillSymlink()` after writing the plist + wrapper. `uninstall()` calls `removeSkillSymlink()`. |
-| `src/pipeline/linear-client.ts` | Wrap `addComment` in a small retry helper (3 attempts, exponential backoff) so Phase 3's mongosh-write traceability comments (which carry the `runId` for writes that lack `updatedBy`) don't silently disappear when Linear hiccups. The retry helper is internal; the public method signature does not change. |
 | `package.json` | Add `"skills/"` to the `files` array so the skill ships with the npm tarball. No new dependencies. |
 
 ### Files NOT touched
@@ -445,8 +444,8 @@ function resolveBundledSkillPath(name: string): string {
  * Beekeeper's existing skill auto-discovery (config.ts:84-97 discoverUserSkills)
  * walks ~/.claude/skills/ for any directory or symlink with a SKILL.md inside.
  */
-function resolveLinkPath(name: string): string {
-  return join(homedir(), ".claude", "skills", name);
+function resolveLinkPath(name: string, baseDir?: string): string {
+  return join(baseDir ?? homedir(), ".claude", "skills", name);
 }
 
 /**
@@ -460,14 +459,21 @@ function resolveLinkPath(name: string): string {
  *
  * Returns a result object describing what happened, for the caller to print.
  */
-export function installSkillSymlink(skillName: string = SKILL_NAME): {
+/**
+ * @param baseDir - Optional override for the install root. Defaults to homedir().
+ *                  For testing only; production callers omit it.
+ */
+export function installSkillSymlink(
+  skillName: string = SKILL_NAME,
+  baseDir?: string,
+): {
   status: "created" | "already-current" | "replaced" | "blocked-real-dir";
   linkPath: string;
   targetPath: string;
   detail?: string;
 } {
   const targetPath = resolveBundledSkillPath(skillName);
-  const linkPath = resolveLinkPath(skillName);
+  const linkPath = resolveLinkPath(skillName, baseDir);
 
   // Ensure parent directory exists.
   mkdirSync(join(homedir(), ".claude", "skills"), { recursive: true });
@@ -528,11 +534,18 @@ export function installSkillSymlink(skillName: string = SKILL_NAME): {
  * generate-plist.uninstall() but only fires when the operator explicitly
  * runs `beekeeper uninstall`.
  */
-export function removeSkillSymlink(skillName: string = SKILL_NAME): {
+/**
+ * @param baseDir - Optional override for the install root. Defaults to homedir().
+ *                  For testing only; production callers omit it.
+ */
+export function removeSkillSymlink(
+  skillName: string = SKILL_NAME,
+  baseDir?: string,
+): {
   status: "removed" | "not-present" | "skipped-real-dir";
   linkPath: string;
 } {
-  const linkPath = resolveLinkPath(skillName);
+  const linkPath = resolveLinkPath(skillName, baseDir);
   let kind: "missing" | "symlink" | "real-dir" = "missing";
   try {
     const stat = lstatSync(linkPath);
@@ -552,13 +565,7 @@ export function removeSkillSymlink(skillName: string = SKILL_NAME): {
 }
 ```
 
-- [ ] **Step 8.2:** Create `src/service/skill-installer.test.ts` with Vitest coverage. Use `mkdtempSync` for an isolated test home, and override `homedir()` via env var or by passing a configurable base path. **Two acceptable test strategies:**
-
-  (a) **Add a `baseDir` parameter** to `installSkillSymlink`/`removeSkillSymlink` (defaulting to `homedir()`) so tests can pass a tmp dir without monkey-patching. Preferred.
-
-  (b) Mock the os module via Vitest's `vi.mock`. Keeps the API surface clean but couples tests to the module mock.
-
-  Pick (a). Update both functions to take an optional `baseDir?: string` and resolve the link path off it. Update the JSDoc to mention the parameter is for testing only.
+- [ ] **Step 8.2:** Create `src/service/skill-installer.test.ts` with Vitest coverage. The `installSkillSymlink`/`removeSkillSymlink`/`resolveLinkPath` signatures (defined in Step 8.1) already accept an optional `baseDir?: string` for testing — use `mkdtempSync` for an isolated test home and pass that path as `baseDir`.
 
   Test cases (one `it()` each):
   - Fresh install creates the symlink and points at the bundled skill (`status: "created"`).
@@ -648,60 +655,17 @@ git commit -m "feat(skill): postinstall step that symlinks tune-instance into ~/
 
 ---
 
-## Task 9: `addComment` retry wrapper for Phase 3 traceability
+## Task 9: ~~`addComment` retry wrapper~~ — **SUPERSEDED, see Round 1 review note below**
 
-**Files:**
-- Modify: `src/pipeline/linear-client.ts`
-- Modify: `src/pipeline/linear-client.test.ts` (or create if absent)
+Per fresh-eyes plan-review Round 1 (2026-04-26), this task is dropped from KPR-72's scope.
 
-**Why this lives in linear-client, not in the skill:** the skill itself is markdown — it can't ship a retry helper. The retry wrapper is a server-side robustness improvement to `LinearClient.addComment` so that when the skill's Phase 3 mongosh-write traceability comments fire (carrying `runId`), a transient Linear network blip doesn't silently drop the audit row. The change is internal — public method signature does not change.
+**Why dropped:** the skill writes Linear comments via the Linear MCP (`mcp__linear__save_comment` / equivalent), NOT through `src/pipeline/linear-client.ts`. `LinearClient.addComment` is called only by `src/pipeline/mutex.ts` and `src/pipeline/handlers/drafting.ts` — pipeline-internal code that this skill doesn't touch. A retry wrapper on `addComment` therefore does nothing for KPR-72.
 
-- [ ] **Step 9.1:** In `src/pipeline/linear-client.ts`, replace the existing `addComment` method body with a small retry wrapper. Keep the public signature `addComment(issueId: string, body: string): Promise<{ id: string; createdAt: string }>` unchanged.
+**Where it actually belongs:** KPR-96 (pipeline-tick Phase 2) plan already includes the equivalent change as its Task 6 (`Linear-client retry: wrap addComment with one-retry-with-backoff in linear-client.ts (~20 LOC + tests, benefits Phase 1 tick code too)`). KPR-96 will land it for the pipeline-internal use case it actually serves.
 
-```typescript
-async addComment(issueId: string, body: string): Promise<{ id: string; createdAt: string }> {
-  const maxAttempts = 3;
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const result = await this.sdk.createComment({ issueId, body });
-      if (!result.success || !result.comment) {
-        throw new Error("Failed to create Linear comment (success=false)");
-      }
-      const c = await result.comment;
-      return { id: c.id, createdAt: c.createdAt.toISOString() };
-    } catch (err) {
-      lastErr = err;
-      if (attempt < maxAttempts) {
-        // Exponential backoff: 200ms, 400ms.
-        await new Promise((r) => setTimeout(r, 200 * 2 ** (attempt - 1)));
-        continue;
-      }
-    }
-  }
-  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  throw new Error(`addComment failed after ${maxAttempts} attempts: ${msg}`);
-}
-```
+**What replaces it for KPR-72's resilience story:** the skill's Phase 3 mongosh-write traceability is delivered via two channels in spec Goal #5: (a) Linear comment via MCP, AND (b) a "mongosh writes" subsection in the Phase 4 findings doc carrying the `runId`. If the MCP-side Linear comment write fails, the SKILL's Phase 4 logic still records the write in the findings doc — operator audit trail survives via the filesystem-side channel. No retry wrapper needed in this codebase for KPR-72 to deliver its acceptance criteria.
 
-- [ ] **Step 9.2:** Add a Vitest test that mocks the SDK to fail twice then succeed; assert the third call returns the success payload, AND assert `setTimeout` was called twice with the expected backoff delays. Use `vi.useFakeTimers()` so the test doesn't actually sleep.
-
-  Add a second test that mocks the SDK to fail all three times; assert the wrapper throws with the `"addComment failed after 3 attempts:"` prefix.
-
-- [ ] **Step 9.3:** Verify
-
-```bash
-npm run check
-```
-
-Expected: all tests (including pipeline + new addComment retry tests) pass.
-
-- [ ] **Step 9.4:** Commit
-
-```bash
-git add src/pipeline/linear-client.ts src/pipeline/linear-client.test.ts
-git commit -m "feat(pipeline): retry wrapper on LinearClient.addComment (3 attempts, expo backoff)"
-```
+(Numbered as Task 9 to keep cross-walk references stable; Tasks 10 and 11 retain their existing numbers below.)
 
 ---
 
@@ -824,7 +788,7 @@ For self-review and reviewer cross-check. Each acceptance criterion in spec §"A
 | Phase 2 supports cherry-pick selection (apply/defer/skip + apply-all + confirmation) | Task 5 |
 | Phase 2 parsing-failure contract (one clarifier; two ambiguous → abandon Phase 3 + Phase 4 still runs) | Task 5 + Task 7 |
 | Phase 3 applies only operator-approved findings; un-approved persist as deferred/skipped | Task 6 + Task 7 |
-| Every Phase 3 write tags `updatedBy`; mongosh writes get Linear comment + Phase 4 row | Task 6 + Task 7 + Task 9 |
+| Every Phase 3 write tags `updatedBy`; mongosh writes get Linear comment + Phase 4 row | Task 6 + Task 7 (Task 9 dropped — KPR-96 covers the pipeline-internal retry wrapper; KPR-72 SKILL handles MCP-side Linear write failures via the Phase 4 findings doc channel) |
 | Section 1 edits refused unless template-drift backfill OR explicit override; finding-scoped abandonment | Task 6 |
 | Frame-awareness: frame-managed config flagged for explicit bypass; frame-integrity findings flag inconsistencies | Task 4 |
 | Frame-naive instances behave identically to pre-KPR-83 baseline | Task 4 (no-op clause) |
@@ -858,7 +822,7 @@ Reviewed against spec §"Acceptance criteria" lines 257–273. All 16 ACs map to
   - Item 1 (skill directory + frontmatter + 9-step playbook port) → Tasks 1, 3.
   - Item 2 (frame-awareness extensions) → Task 4.
   - Item 3 (Phase 2 cherry-pick conversational parsing) → Task 5.
-  - Item 4 (Phase 3 write-path coordination — `updatedBy`, Section 1 guard, Linear comment for mongosh writes) → Task 6 + Task 9.
+  - Item 4 (Phase 3 write-path coordination — `updatedBy`, Section 1 guard, Linear comment for mongosh writes) → Task 6 + Task 7 (Linear write resilience handled via Phase 4 findings doc fallback per Round 1 review; see Task 9 supersession note).
   - Item 5 (Phase 4 findings doc + `_index.md` format spec + write semantics) → Task 7.
   - Item 6 (Beekeeper installer / postinstall) → Task 8.
   - Item 7 (operator-facing README) → Task 10.
@@ -868,7 +832,7 @@ Reviewed against spec §"Acceptance criteria" lines 257–273. All 16 ACs map to
 
 - **No new MCP servers** confirmed across all tasks. The skill consumes existing `admin_save_constitution`, `admin_save_agent`, `admin_save_memory` (where applicable), and mongosh access. Spec §"Non-goals" line 33 satisfied.
 
-- **`addComment` retry wrapper** (Task 9) lives in `src/pipeline/linear-client.ts` rather than the skill itself because the skill is markdown — a retry helper has to live in compiled code. The wrapper improves Phase 3 mongosh-write traceability robustness without changing the public method signature. This is the only TypeScript code touched by this plan beyond the installer; called out explicitly so reviewers don't expect more.
+- **Round 1 review fix (2026-04-26)**: Task 9 (`addComment` retry wrapper on `src/pipeline/linear-client.ts`) was originally rationalized as improving Phase 3 mongosh-write traceability. Plan-review caught that the SKILL writes Linear comments via the Linear MCP, NOT through `LinearClient.addComment` — the retry wrapper would only affect pipeline-internal call sites (`mutex.ts`, `handlers/drafting.ts`) the skill doesn't touch. Task 9 dropped from KPR-72 scope; KPR-96's plan Task 6 already includes the equivalent retry wrapper for its actual consumer (the orchestrator). KPR-72 SKILL handles MCP-side Linear write failures by falling through to the Phase 4 findings doc channel — operator audit trail survives via filesystem persistence even when Linear hiccups. **The only TypeScript code this plan touches beyond the SKILL.md content is the postinstall installer (Task 8) and `package.json#files` (Task 2).**
 
 - **Section 1 finding-scoped vs. Phase 2 phase-scoped abandonment** — the asymmetry is preserved verbatim from spec §"Phase 3" line 182. Phase 2 abandons all of Phase 3 because the ambiguity is about which findings to apply at all; Section 1 only abandons the single ambiguous finding because the rest of Phase 3 is still well-defined.
 
