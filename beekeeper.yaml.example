@@ -23,3 +23,16 @@ confirm_operations:
   - "git reset --hard"
   - "git checkout -- ."
   - "git clean -f"
+
+# Pipeline-tick configuration. Required only when running `beekeeper pipeline-tick`.
+# linearTeamKey is the Linear team prefix (e.g., "KPR" for Keepur).
+# repoPaths maps short repo names to absolute paths on disk; consumed by the
+#   description-grep repo-resolver. If omitted, the resolver falls back to
+#   ~/github/<name>.
+# mainBranch defaults to "main" if omitted.
+pipeline:
+  linearTeamKey: KPR
+  repoPaths:
+    hive: ~/github/hive
+    beekeeper: ~/github/beekeeper
+  mainBranch: main
