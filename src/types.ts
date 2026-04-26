@@ -43,6 +43,15 @@ export type ServerMessage =
   | { type: "error"; message: string; sessionId?: string }
   | { type: "pong" };
 
+export interface PipelineConfig {
+  /** Linear team key (e.g., "KPR" for Keepur). Used to filter `--all`/team scope. */
+  linearTeamKey: string;
+  /** Optional: explicit repo allowlist for repo-resolver. Keyed by short name. */
+  repoPaths?: Record<string, string>;
+  /** Optional: default branch for `epic→main` merges (defaults to "main"). */
+  mainBranch?: string;
+}
+
 export interface BeekeeperConfig {
   port: number;
   model: string;
@@ -55,4 +64,6 @@ export interface BeekeeperConfig {
   plugins?: string[];
   capabilitiesHealthIntervalMs: number;
   capabilitiesFailureThreshold: number;
+  /** Pipeline-tick configuration. Required only when `pipeline-tick` subcommand is invoked. */
+  pipeline?: PipelineConfig;
 }
