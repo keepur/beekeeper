@@ -78,6 +78,33 @@ describe("handleReview", () => {
     expect(result.detail).toContain("APPROVE");
   });
 
+  it("In Review + prior-state spawn-log (kind!=code-review) → does NOT suppress (no 'reviewer in flight' wait)", async () => {
+    // Regression guard for round-2 fix: a spawn-log carried over from a
+    // prior-state action (drafting/pickup/implementer) must not register
+    // as a reviewer in flight. Without the kind=code-review filter, this
+    // ticket would short-circuit to "reviewer in flight — waiting for output"
+    // on every tick and the reviewer would never be spawned.
+    //
+    // Asserting the negation: the handler must NOT return that wait detail.
+    // Whether it then spawns, blocks, or transitions depends on PR/repo
+    // fixtures — orthogonal to this regression's guarantee.
+    const comments: TicketComment[] = [
+      {
+        id: "c-old-spawn",
+        body: "tick-spawn-log: runId=tick-old agentId=agent-pickup-01 kind=pickup",
+        createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      },
+    ];
+    const result = await handleReview({
+      client: clientStub(),
+      ticket: ticket({ state: "In Review", comments }),
+      decision,
+      config,
+      spawn: vi.fn(),
+    });
+    expect(result.detail).not.toContain("reviewer in flight");
+  });
+
   it("In Review + spawn-log present + no reviewer output → wait, do not re-spawn", async () => {
     // Reviewer is in flight: spawn-log on the ticket but no JSON verdict
     // comment yet. The handler must skip (not re-spawn) so the in-flight
