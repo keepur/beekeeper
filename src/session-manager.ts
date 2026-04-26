@@ -9,6 +9,7 @@ import type { ToolGuardian } from "./tool-guardian.js";
 import type { QuestionRelayer } from "./question-relayer.js";
 import type { ServerMessage, BeekeeperConfig } from "./types.js";
 import { listWorkspaceSessions as scanWorkspaceSessions, INIT_PROMPT } from "./session-history.js";
+import { resolveBeekeeperSecret } from "./pipeline/honeypot-reader.js";
 
 const log = createLogger("beekeeper-session");
 
@@ -581,7 +582,7 @@ export class SessionManager {
    * formatted as a single session message. `args` is the raw split arg list.
    */
   private async handlePipelineTick(sessionId: string, args: string[]): Promise<void> {
-    const apiKey = process.env.LINEAR_API_KEY;
+    const apiKey = resolveBeekeeperSecret("LINEAR_API_KEY");
     if (!apiKey || !this.config.pipeline) {
       const missing: string[] = [];
       if (!apiKey) missing.push("LINEAR_API_KEY env var");
