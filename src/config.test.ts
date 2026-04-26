@@ -182,6 +182,103 @@ describe("loadConfig", () => {
     expect(config.defaultWorkspace).toBe("my-project");
     expect(config.workspaces).toEqual({ "my-project": "~/code/my-project" });
   });
+
+  const VALID_ORCHESTRATOR = {
+    stallThresholds: {
+      drafting:    { soft: 300000, hard: 900000 },
+      review:      { soft: 300000, hard: 900000 },
+      implementer: { soft: 600000, hard: 1800000 },
+    },
+    pipelineModel: {
+      drafting: "claude-opus-4-7",
+      review: "claude-opus-4-7",
+      implementer: "claude-sonnet-4-6",
+    },
+    bashAllowlist: ["^gh ", "^git "],
+    jobTtlMs: 86400000,
+  };
+
+  it("parses pipeline.orchestrator into typed OrchestratorConfig", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      pipeline: {
+        linearTeamKey: "KPR",
+        orchestrator: VALID_ORCHESTRATOR,
+      },
+    });
+    const config = loadConfig();
+    expect(config.pipeline?.orchestrator).toBeDefined();
+    expect(config.pipeline?.orchestrator?.stallThresholds.drafting.hard).toBe(900000);
+    expect(config.pipeline?.orchestrator?.bashAllowlist).toEqual(["^gh ", "^git "]);
+    expect(config.pipeline?.orchestrator?.jobTtlMs).toBe(86400000);
+  });
+
+  it("defaults jobTtlMs to 24h when omitted", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      pipeline: {
+        linearTeamKey: "KPR",
+        orchestrator: { ...VALID_ORCHESTRATOR, jobTtlMs: undefined },
+      },
+    });
+    const config = loadConfig();
+    expect(config.pipeline?.orchestrator?.jobTtlMs).toBe(86400000);
+  });
+
+  it("rejects orchestrator with soft >= hard", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      pipeline: {
+        linearTeamKey: "KPR",
+        orchestrator: {
+          ...VALID_ORCHESTRATOR,
+          stallThresholds: {
+            ...VALID_ORCHESTRATOR.stallThresholds,
+            drafting: { soft: 1000, hard: 500 },
+          },
+        },
+      },
+    });
+    expect(() => loadConfig()).toThrow(/soft must be < hard/);
+  });
+
+  it("rejects orchestrator with empty bashAllowlist", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      pipeline: {
+        linearTeamKey: "KPR",
+        orchestrator: { ...VALID_ORCHESTRATOR, bashAllowlist: [] },
+      },
+    });
+    expect(() => loadConfig()).toThrow(/bashAllowlist must be a non-empty array/);
+  });
+
+  it("rejects orchestrator missing pipelineModel.implementer", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({
+      pipeline: {
+        linearTeamKey: "KPR",
+        orchestrator: {
+          ...VALID_ORCHESTRATOR,
+          pipelineModel: { drafting: "x", review: "x" },
+        },
+      },
+    });
+    expect(() => loadConfig()).toThrow(/pipelineModel\.implementer/);
+  });
+
+  it("returns pipeline.orchestrator=undefined when block omitted", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("yaml content");
+    mockParseYaml.mockReturnValue({ pipeline: { linearTeamKey: "KPR" } });
+    const config = loadConfig();
+    expect(config.pipeline?.orchestrator).toBeUndefined();
+  });
 });
 
 describe("autoSourceEnv", () => {

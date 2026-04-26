@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { ulid } from "ulid";
+import { resolveBeekeeperSecret } from "./honeypot-reader.js";
 import { createLogger } from "../logging/logger.js";
 
 const log = createLogger("pipeline-spawn");
@@ -17,46 +16,72 @@ export interface SpawnInput {
 
 export interface SpawnResult {
   agentId: string;
-  /** Phase 1: always "started". Tick does not wait. */
+  /** Phase 2 keeps the same shape: tick does not wait. */
   status: "started";
 }
 
+export class BeekeeperServerNotRunningError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BeekeeperServerNotRunningError";
+  }
+}
+
+const DEFAULT_PORT = 8420;
+
 /**
- * Per OQ-1: detached `claude` CLI children. The tick CLI exits immediately;
- * each subagent runs to completion in the background and writes its result
- * back to Linear via the inherited `LINEAR_API_KEY`. `child.unref()` so the
- * parent can exit without waiting.
+ * Phase 2: thin HTTP client to the in-server PipelineOrchestrator. The CLI
+ * runs on the same machine as the server (Mac Mini); fetch is loopback-only.
  *
- * `claude -p <prompt>` is the documented non-interactive (print) mode; tools
- * are still permitted, so the subagent can read/write files, call `git`,
- * `gh`, and similar. The subagent is responsible for posting its own audit
- * comments on the ticket.
- *
- * NOTE: This is the lone documented exception to the "no execFile-on-shell"
- * convention. The arg array is still strictly `[binary, ...args]` form — no
- * shell-string concatenation.
+ * No fallback to Phase 1's detached spawn — Phase 1's observability gaps are
+ * exactly what this work exists to close.
  */
 export async function spawnSubagent(input: SpawnInput): Promise<SpawnResult> {
-  const agentId = `agent-${ulid()}`;
-  const args = ["-p", input.prompt];
-  const child = spawn("claude", args, {
-    cwd: input.repoPath,
-    env: {
-      ...process.env,
-      PIPELINE_AGENT_ID: agentId,
-      PIPELINE_TICKET_ID: input.ticketId,
-      PIPELINE_KIND: input.kind,
-    },
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-  });
-  child.unref();
-  log.info("Subagent launched", {
-    agentId,
+  const port = Number(process.env.BEEKEEPER_PORT ?? DEFAULT_PORT);
+  const adminSecret = resolveBeekeeperSecret("BEEKEEPER_ADMIN_SECRET");
+  if (!adminSecret) {
+    throw new Error(
+      "BEEKEEPER_ADMIN_SECRET not resolvable (set in env or via `honeypot set beekeeper/BEEKEEPER_ADMIN_SECRET <value>`)",
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`http://127.0.0.1:${port}/admin/pipeline/jobs`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${adminSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    });
+  } catch (err) {
+    // ECONNREFUSED, network unreachable, etc. — translate to actionable diagnostic.
+    throw new BeekeeperServerNotRunningError(
+      `Cannot reach Beekeeper server at http://127.0.0.1:${port}.\n\n` +
+      "Pipeline-tick Phase 2 runs orchestration in-server. Start the server first:\n" +
+      "  - On your Mac (LaunchAgent installed): launchctl kickstart -k gui/$(id -u)/com.keepur.beekeeper\n" +
+      "  - Foreground/dev: beekeeper serve\n\n" +
+      `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string; existingAgentId?: string };
+    throw new Error(
+      `Ticket ${input.ticketId} already has running subagent ${body.existingAgentId ?? "(unknown)"} — concurrent spawn refused`,
+    );
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Spawn failed: ${response.status} ${text}`);
+  }
+  const result = (await response.json()) as { agentId: string; status: "started" };
+  log.info("Subagent spawn POSTed to orchestrator", {
+    agentId: result.agentId,
     kind: input.kind,
     ticketId: input.ticketId,
     repoPath: input.repoPath,
-    pid: child.pid,
   });
-  return { agentId, status: "started" };
+  return { agentId: result.agentId, status: result.status };
 }

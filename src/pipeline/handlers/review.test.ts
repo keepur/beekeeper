@@ -45,7 +45,7 @@ describe("handleReview", () => {
 
   it("transitions to In Review when In Progress + PR present", async () => {
     const attachments: TicketAttachment[] = [
-      { id: "a1", url: "https://github.com/x/y/pull/1", title: "PR" },
+      { id: "a1", url: "https://github.com/x/y/pull/1", title: "PR", createdAt: "2026-04-26T00:00:00.000Z" },
     ];
     const client = clientStub();
     const result = await handleReview({

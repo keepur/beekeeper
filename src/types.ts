@@ -43,6 +43,27 @@ export type ServerMessage =
   | { type: "error"; message: string; sessionId?: string }
   | { type: "pong" };
 
+export interface OrchestratorStallThresholds {
+  drafting:    { soft: number; hard: number };
+  review:      { soft: number; hard: number };
+  implementer: { soft: number; hard: number };
+}
+
+export interface OrchestratorPipelineModels {
+  drafting: string;
+  review: string;
+  implementer: string;
+}
+
+export interface OrchestratorConfig {
+  stallThresholds: OrchestratorStallThresholds;
+  pipelineModel: OrchestratorPipelineModels;
+  /** Regex strings (raw, anchored), one per allowlist row in the design spec. */
+  bashAllowlist: string[];
+  /** ms — completed/errored job retention before eviction from the in-memory map. */
+  jobTtlMs: number;
+}
+
 export interface PipelineConfig {
   /** Linear team key (e.g., "KPR" for Keepur). Used to filter `--all`/team scope. */
   linearTeamKey: string;
@@ -50,6 +71,8 @@ export interface PipelineConfig {
   repoPaths?: Record<string, string>;
   /** Optional: default branch for `epic→main` merges (defaults to "main"). */
   mainBranch?: string;
+  /** Phase 2 orchestrator config. Required when running Beekeeper server with pipeline-tick. */
+  orchestrator?: OrchestratorConfig;
 }
 
 export interface BeekeeperConfig {

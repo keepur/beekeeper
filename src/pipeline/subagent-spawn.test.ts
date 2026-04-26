@@ -1,62 +1,70 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const spawnMock = vi.fn();
-vi.mock("node:child_process", () => ({
-  spawn: (...args: unknown[]) => spawnMock(...args),
+vi.mock("../logging/logger.js", () => ({
+  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 
-const fakeChild = { unref: vi.fn(), pid: 12345 };
+vi.mock("./honeypot-reader.js", () => ({
+  resolveBeekeeperSecret: (k: string) => (k === "BEEKEEPER_ADMIN_SECRET" ? "s" : null),
+}));
+
+const fetchMock = vi.fn();
 
 beforeEach(() => {
-  spawnMock.mockReset();
-  spawnMock.mockReturnValue(fakeChild);
-  fakeChild.unref.mockClear();
+  fetchMock.mockReset();
+  globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 });
 
-describe("spawnSubagent", () => {
-  it("invokes claude -p with the prompt and detaches the child", async () => {
-    const { spawnSubagent } = await import("./subagent-spawn.js");
-    const result = await spawnSubagent({
-      kind: "draft-plan",
-      prompt: "draft me a plan",
-      repoPath: "/tmp/repo",
-      ticketId: "KPR-90",
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("spawnSubagent (Phase 2 HTTP client)", () => {
+  it("POSTs to /admin/pipeline/jobs and returns SpawnResult", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ agentId: "agent-A", status: "started" }),
     });
-    expect(spawnMock).toHaveBeenCalledTimes(1);
-    const [bin, args, opts] = spawnMock.mock.calls[0] as [
-      string,
-      string[],
-      { cwd: string; env: NodeJS.ProcessEnv; detached: boolean; stdio: unknown },
-    ];
-    expect(bin).toBe("claude");
-    expect(args).toEqual(["-p", "draft me a plan"]);
-    expect(opts.cwd).toBe("/tmp/repo");
-    expect(opts.detached).toBe(true);
-    expect(opts.stdio).toEqual(["ignore", "ignore", "ignore"]);
-    expect(opts.env.PIPELINE_AGENT_ID).toBe(result.agentId);
-    expect(opts.env.PIPELINE_TICKET_ID).toBe("KPR-90");
-    expect(opts.env.PIPELINE_KIND).toBe("draft-plan");
-    expect(fakeChild.unref).toHaveBeenCalled();
-    expect(result.status).toBe("started");
-    expect(result.agentId).toMatch(/^agent-[0-9A-HJKMNP-TV-Z]{26}$/);
+    const { spawnSubagent } = await import("./subagent-spawn.js");
+    const r = await spawnSubagent({ kind: "draft-spec", prompt: "p", repoPath: "/r", ticketId: "K-1" });
+    expect(r.agentId).toBe("agent-A");
+    expect(r.status).toBe("started");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/127\.0\.0\.1:\d+\/admin\/pipeline\/jobs$/);
+    expect(init.method).toBe("POST");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer s");
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({ kind: "draft-spec", prompt: "p", repoPath: "/r", ticketId: "K-1" });
   });
 
-  it("propagates the LINEAR_API_KEY through inherited env", async () => {
-    const prev = process.env.LINEAR_API_KEY;
-    process.env.LINEAR_API_KEY = "lin_api_test";
-    try {
-      const { spawnSubagent } = await import("./subagent-spawn.js");
-      await spawnSubagent({
-        kind: "code-review",
-        prompt: "review",
-        repoPath: "/tmp/r",
-        ticketId: "KPR-1",
-      });
-      const opts = spawnMock.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv };
-      expect(opts.env.LINEAR_API_KEY).toBe("lin_api_test");
-    } finally {
-      if (prev === undefined) delete process.env.LINEAR_API_KEY;
-      else process.env.LINEAR_API_KEY = prev;
-    }
+  it("translates ECONNREFUSED to BeekeeperServerNotRunningError", async () => {
+    fetchMock.mockRejectedValue(new TypeError("fetch failed: ECONNREFUSED"));
+    const { spawnSubagent, BeekeeperServerNotRunningError } = await import("./subagent-spawn.js");
+    await expect(spawnSubagent({ kind: "draft-spec", prompt: "p", repoPath: "/r", ticketId: "K-1" }))
+      .rejects.toBeInstanceOf(BeekeeperServerNotRunningError);
+  });
+
+  it("propagates 409 ticket-busy with the existing agentId in the message", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "ticket-busy", existingAgentId: "agent-EXISTING" }),
+    });
+    const { spawnSubagent } = await import("./subagent-spawn.js");
+    await expect(spawnSubagent({ kind: "draft-spec", prompt: "p", repoPath: "/r", ticketId: "K-1" }))
+      .rejects.toThrow(/agent-EXISTING/);
+  });
+
+  it("propagates non-ok responses with status code", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => "server-side oops",
+    });
+    const { spawnSubagent } = await import("./subagent-spawn.js");
+    await expect(spawnSubagent({ kind: "draft-spec", prompt: "p", repoPath: "/r", ticketId: "K-1" }))
+      .rejects.toThrow(/500/);
   });
 });
