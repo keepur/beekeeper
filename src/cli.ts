@@ -129,6 +129,20 @@ switch (command) {
     if (userExit) process.exit(userExit);
     break;
   }
+  case "pipeline-tick": {
+    const { loadConfig } = await import("./config.js");
+    const { runPipelineCli } = await import("./pipeline/cli.js");
+    const config = loadConfig();
+    const result = await runPipelineCli({
+      argv: process.argv.slice(3),
+      config: config.pipeline,
+      apiKey: process.env.LINEAR_API_KEY,
+    });
+    for (const line of result.output) console.log(line);
+    for (const line of result.errors) console.error(line);
+    if (result.exitCode) process.exit(result.exitCode);
+    break;
+  }
   default:
     // No command — start the server
     await import("./index.js");

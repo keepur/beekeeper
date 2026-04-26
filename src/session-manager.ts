@@ -110,6 +110,10 @@ export class SessionManager {
       description: "Show current session info",
       handler: (sessionId, _args, slot) => this.handleStatus(sessionId, slot),
     });
+    this.commands.set("pipeline-tick", {
+      description: "Run pipeline-tick (Linear-driven autonomous ticket execution)",
+      handler: (sessionId, args) => this.handlePipelineTick(sessionId, args),
+    });
   }
 
   addClient(deviceId: string, user: string, ws: WebSocket): void {
@@ -569,6 +573,35 @@ export class SessionManager {
   private async handleStatus(sessionId: string, slot: SessionSlot): Promise<void> {
     const lines = [`Session: ${slot.sessionId}`, `Workspace: ${slot.cwd}`, `State: ${slot.state}`];
     this.send({ type: "message", text: lines.join("\n"), sessionId, final: true });
+  }
+
+  /**
+   * /pipeline-tick — run the pipeline driver from inside a Beekeeper session.
+   * Thin wrapper over the same `runPipelineCli` the CLI uses; output is
+   * formatted as a single session message. `args` is the raw split arg list.
+   */
+  private async handlePipelineTick(sessionId: string, args: string[]): Promise<void> {
+    const apiKey = process.env.LINEAR_API_KEY;
+    if (!apiKey || !this.config.pipeline) {
+      const missing: string[] = [];
+      if (!apiKey) missing.push("LINEAR_API_KEY env var");
+      if (!this.config.pipeline) missing.push("'pipeline:' block in beekeeper.yaml");
+      this.send({
+        type: "message",
+        text: `pipeline-tick not configured: missing ${missing.join(" and ")}.`,
+        sessionId,
+        final: true,
+      });
+      return;
+    }
+    const { runPipelineCli } = await import("./pipeline/cli.js");
+    const result = await runPipelineCli({
+      argv: args,
+      config: this.config.pipeline,
+      apiKey,
+    });
+    const text = [...result.output, ...result.errors].join("\n");
+    this.send({ type: "message", text, sessionId, final: true });
   }
 
   /**

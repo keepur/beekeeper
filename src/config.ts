@@ -2,7 +2,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
-import type { BeekeeperConfig } from "./types.js";
+import type { BeekeeperConfig, PipelineConfig } from "./types.js";
 import { createLogger } from "./logging/logger.js";
 
 const log = createLogger("beekeeper-config");
@@ -96,6 +96,29 @@ function discoverUserSkills(): string[] {
   return paths;
 }
 
+function parsePipeline(raw: unknown): PipelineConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.linearTeamKey !== "string" || v.linearTeamKey.length === 0) {
+    throw new Error("beekeeper.yaml: pipeline.linearTeamKey is required");
+  }
+  let repoPaths: Record<string, string> | undefined;
+  if (v.repoPaths && typeof v.repoPaths === "object") {
+    repoPaths = {};
+    for (const [name, p] of Object.entries(v.repoPaths as Record<string, unknown>)) {
+      if (typeof p !== "string" || p.length === 0) {
+        throw new Error(`beekeeper.yaml: pipeline.repoPaths.${name} must be a non-empty string`);
+      }
+      repoPaths[name] = p.replace(/^~/, process.env.HOME ?? "");
+    }
+  }
+  return {
+    linearTeamKey: v.linearTeamKey,
+    repoPaths,
+    mainBranch: typeof v.mainBranch === "string" ? v.mainBranch : undefined,
+  };
+}
+
 export function loadConfig(): BeekeeperConfig {
   const sourced = autoSourceEnv();
   if (sourced) {
@@ -164,5 +187,6 @@ export function loadConfig(): BeekeeperConfig {
     plugins: allPlugins,
     capabilitiesHealthIntervalMs: (raw.capabilities_health_interval_ms as number) ?? 10000,
     capabilitiesFailureThreshold: (raw.capabilities_failure_threshold as number) ?? 2,
+    pipeline: parsePipeline(raw.pipeline),
   };
 }
