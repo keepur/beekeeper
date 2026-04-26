@@ -43,6 +43,15 @@ export type ServerMessage =
   | { type: "error"; message: string; sessionId?: string }
   | { type: "pong" };
 
+export interface InstanceConfig {
+  /** Path to the deployed instance (e.g., ~/services/hive/dodi). */
+  servicePath: string;
+  /** MongoDB connection URI. Defaults to mongodb://localhost:27017. */
+  mongoUri?: string;
+  /** MongoDB database name. Defaults to `hive_<instanceId>`. */
+  dbName?: string;
+}
+
 export interface BeekeeperConfig {
   port: number;
   model: string;
@@ -55,4 +64,6 @@ export interface BeekeeperConfig {
   plugins?: string[];
   capabilitiesHealthIntervalMs: number;
   capabilitiesFailureThreshold: number;
+  /** Map of instanceId → instance config. Used by the `frame` subcommand. */
+  instances?: Record<string, InstanceConfig>;
 }
