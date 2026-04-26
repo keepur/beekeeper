@@ -102,6 +102,20 @@ export interface DriftFinding {
 }
 ```
 
+Also extend the existing `DriftDecision` interface with an `againstVersion` field — Task 5 needs it for version-bump re-surfacing:
+
+```typescript
+export interface DriftDecision {
+  resource: string;
+  decision: "keep-local" | "take-frame" | "merged" | "deferred";
+  decidedAt: Date;
+  decidedBy: string;
+  reason?: string;
+  /** Frame version this decision was made against. Audit re-surfaces the finding when the applied version moves past this. */
+  againstVersion?: string;
+}
+```
+
 - [ ] **Step 1.2** Verify: `npm run typecheck`. Expect existing tests to break (the Phase 1 store + apply + audit reference the old shapes); that's fine — they get updated in subsequent tasks. If typecheck reports errors only in `applied-frames-store.ts`, `commands/apply.ts`, `commands/audit.ts`, that's expected. Do **not** patch those here; the next tasks own those files.
 
 - [ ] **Step 1.3** Commit: `feat(frames/p2): extend types — replacedClaimFrom, schedule/seed records, DriftFinding`.
@@ -145,12 +159,12 @@ The asset writer is the workhorse module. It exports a `write*` and a `remove*` 
   | `removeMemorySeed(db, seedRec, frameName)` | Skip if any other applied frame claims the same `contentHash`. Otherwise `agent_memory.deleteOne({_id})`. |
   | `writeCoreServers(db, asset, resolvedAgents)` | For each agent, set-union add. Use `$addToSet: { coreServers: { $each: toAdd } }`. Returns `Record<agentId, string[]>` of *only the servers actually added* (for clean reverse). |
   | `removeCoreServers(db, coreserversResource)` | For each agentId, `$pullAll: { coreServers: servers }`. Only the entries this frame added. |
-  | `resolveScheduleSlots(asset, resolvedAgents)` | Pure function. Returns `Array<{ agentId, cron, pattern, windowSlot }>`. Three patterns: explicit cron (all agents same), `pattern: shared` (require `cron`), `pattern: stagger` (require `window` + `interval`). Stagger algorithm: parse `<day> HH:MM-HH:MM [tz]` window and `NNm` interval → `slotCount = floor(duration/interval)`. Sort agents by id; assign slot[i] = window_start + i*interval. Throw if `agents.length > slotCount`. Cron emitted as `<m> <h> * * <dayNum>`. Timezone defaults to instance timezone (read from `<servicePath>/hive.yaml`); IANA zone in window suffix overrides. |
+  | `resolveScheduleSlots(asset, resolvedAgents)` | Pure function. Returns `Array<{ agentId, cron, pattern, windowSlot }>`. Three patterns: explicit cron (all agents same), `pattern: shared` (require `cron`), `pattern: stagger` (require `window` + `interval`). Stagger algorithm: parse `<day> HH:MM-HH:MM [<iana-tz>]` window and `NNm` interval → `slotCount = floor(duration/interval)`. Sort agents by id; assign slot[i] = window_start + i*interval. Throw if `agents.length > slotCount`. Cron emitted as `<m> <h> * * <dayNum>`. Timezone: optional suffix must be a canonical IANA zone (e.g., `America/Los_Angeles`). Non-IANA abbreviations (`PT`, `EST`, `UTC-7`) are rejected with a clear error directing the operator to canonical form. If no suffix, timezone defaults to instance timezone (read from `<servicePath>/hive.yaml`). The spec's `"fri 14:00-17:00 PT"` example is informal narrative shorthand; the manifest parser is strict. |
   | `writeScheduleEntry(db, agentId, task, cron, pattern, windowSlot, frameName, { forceOverride })` | Conflict key is `(agentId, task)`. Check peer claims in `applied_frames.resources.schedule[agentId][]`. Conflict → throw unless `forceOverride` (set `replacedClaimFrom`). Upsert via `$pull` task then `$push` new entry to `agent_definitions.<agent>.schedule`. Returns `AppliedScheduleRecord`. |
   | `removeScheduleEntry(db, agentId, entry)` | `$pull: { schedule: { task: entry.task } }`. |
-  | `writePromptClause(db, agentId, anchor, clauseText)` | Find the `<a id="anchor">` opener in `agent_definitions.<agent>.systemPrompt` (use `text-utils.escapeRe`). Insert `\n${clauseText}` immediately after the anchor opener. Capture `snapshotBefore` (the full pre-write systemPrompt). Returns `{ snapshotBefore, insertedAt: number }`. |
+  | `writePromptClause(db, agentId, anchor, clauseText)` | Find the `<a id="anchor">` opener in `agent_definitions.<agent>.systemPrompt` (use `text-utils.escapeRe`). Insert `\n${clauseText}` immediately after the anchor opener. Capture `snapshotBefore` (the full pre-write systemPrompt). Returns `{ snapshotBefore, insertedText }` where `insertedText` is the literal clause text written (so the caller can record it directly into `resources.prompts[agentId].insertedText[anchor]` without recomputing). |
   | `removePromptClause(db, agentId, anchor, insertedText, snapshotBefore, currentPrompt)` | If `currentPrompt.includes(insertedText)` and no further drift, restore to `snapshotBefore`. Otherwise drop only the literal `insertedText` substring and stderr-warn that surrounding context shifted. |
-  | `writeConstitutionAnchor(db, anchor, insertMode, targetAnchor, fragmentText)` | Read `db.memory.findOne({path: "shared/constitution.md"})`. Apply one of four modes: `replace-anchor` (replace block from anchor opener to next anchor or EOF), `after-anchor` / `before-anchor` (insert `\n\n${text}\n` adjacent to `targetAnchor`), `append-to-anchor` (insert at end of `targetAnchor`'s block). Upsert back. Returns `{ snapshotBefore, insertedText }` where `insertedText = extractAnchorNeighborhood(updated, anchor)`. |
+  | `writeConstitutionAnchor(db, anchor, insertMode, targetAnchor, fragmentText)` | Read `db.memory.findOne({path: "shared/constitution.md"})`. Apply one of four modes: **`replace-anchor`** — replace block from `anchor`'s opener to next anchor or EOF. **`after-anchor`** — insert `\n\n${text}\n` at the **endpoint of `targetAnchor`'s neighborhood** (i.e., position returned by walking `targetAnchor`'s opener forward to the next anchor opener or EOF). **Not** immediately after `targetAnchor`'s opening tag — that would place the fragment inside `targetAnchor`'s block. **`before-anchor`** — insert at `targetAnchor`'s opener position. **`append-to-anchor`** — insert at the end of `targetAnchor`'s block (same endpoint as `after-anchor`, but semantically "extend this section" rather than "add a new section after"). Upsert back. Returns `{ snapshotBefore, insertedText }` where `insertedText = extractAnchorNeighborhood(updated, anchor)`. |
   | `removeConstitutionAnchor(db, snapshotBefore)` | Full revert to `snapshotBefore`. |
 
   Implementation notes:
@@ -209,7 +223,12 @@ Phase 1 audit only checks anchor presence. Phase 2 upgrades to full text-diff pe
 
 Phase 1's audit checks anchor presence only. Replace with `detectDrift` + `driftAccepted` filtering. Preserve KPR-89's behaviour (exit code 1 when actionable findings remain after filtering).
 
-- [ ] **Step 5.1** Replace the per-frame inner check with a `detectDrift` call. Filter findings by `record.driftAccepted` — drop any finding whose `resource` matches an entry whose `decision` is `"keep-local"` or `"deferred"` (decided items remain skipped until the frame version changes; spec § Drift acceptance is durable). Re-surface findings if `record.version !== record.driftAccepted[i].againstVersion` — this means add an `againstVersion` field to `DriftDecision` in `types.ts` (write `manifest.version` at decision time so version bumps re-ask the operator). If that field doesn't exist on older records, treat as "ask again" (re-surface).
+- [ ] **Step 5.1** Replace the per-frame inner check with a `detectDrift` call. Filter findings by `record.driftAccepted`:
+  - **`keep-local`, `take-frame`, `merged`** — suppress entirely from output (decision was made and is honored silently per spec § "Drift acceptance is durable").
+  - **`deferred`** — keep in output but **demote to informational** (`finding.informational = true`). Per spec drift dialog options, `(d) defer` means "leave both, audit will continue to flag" — so the operator continues to see the finding, but it doesn't trip the actionable-drift exit code. This satisfies both spec lines without contradicting either.
+  - **No prior decision** — pass through unchanged.
+
+  Re-surface any decision when `record.version !== decision.againstVersion` (the upstream content moved; the prior decision may no longer apply). If `againstVersion` is missing on an older record, treat as "ask again" (re-surface as actionable). The `DriftDecision.againstVersion` field is added in Task 1.
 
 - [ ] **Step 5.2** Print actionable findings before informational. Format: one line per finding with severity prefix (`drift:` for actionable, `info:` for informational).
 
@@ -229,7 +248,20 @@ Phase 1's audit checks anchor presence only. Replace with `detectDrift` + `drift
 
 Conversational per-finding resolution. Beekeeper-conversational UX is documented in the spec; in the CLI process this is a `readline/promises` loop. Decisions written to `driftAccepted` immediately for resumability — see spec § "Decisions persist mid-session".
 
-- [ ] **Step 6.1** Create `drift-dialog.ts` with one export:
+- [ ] **Step 6.1** First, extend `applied-frames-store.ts` (Phase 1 module) with a new method:
+
+  ```typescript
+  async appendDriftDecision(frameName: string, decision: DriftDecision): Promise<void> {
+    await this.collection.updateOne(
+      { _id: frameName },
+      { $push: { driftAccepted: decision } },
+    );
+  }
+  ```
+
+  No need for `$setOnInsert` because the record is guaranteed to exist by the time the dialog runs (apply has already inserted it, or — for same-version drift — the record is being updated in place).
+
+- [ ] **Step 6.2** Create `drift-dialog.ts` with one export:
 
   ```typescript
   export interface DialogResult {
@@ -250,14 +282,15 @@ Conversational per-finding resolution. Beekeeper-conversational UX is documented
   - **Resumability:** if `record.driftAccepted` already has a decision for a finding's resource at the current frame version, skip and reuse that decision (so re-running the dialog after a partial session continues where it left off).
   - For each remaining finding, prompt with options (a) keep-local, (b) take-frame, (c) merged, (d) deferred.
   - On `(c) merged`: prompt operator to paste merged text, terminated by a line of `---`. Confirm. On confirmation, treat as `take-frame` semantically (apply the merged text) but record decision as `merged` with the merged text in `reason`.
-  - Write each decision to `driftAccepted` immediately via `applied-frames-store.appendDriftDecision(frameName, decision)` — add this method to the Phase 1 store: `{ $push: { driftAccepted: decision } }` with `$setOnInsert: { driftAccepted: [] }` upsert behaviour.
+  - Write each decision to `driftAccepted` immediately via `applied-frames-store.appendDriftDecision(frameName, decision)` (the method added in Step 6.1).
+  - Every recorded decision must include `againstVersion: record.version` so audit's version-bump re-surfacing works (Task 5.1).
   - `--yes` mode: skip prompts; default decision is `take-frame` for every actionable finding.
 
-- [ ] **Step 6.2** No unit test — interactive stdin is exercised via the smoke test in Task 9.
+- [ ] **Step 6.3** No unit test — interactive stdin is exercised via the smoke test in Task 9.
 
-- [ ] **Step 6.3** Verify: `npm run typecheck`. Clean.
+- [ ] **Step 6.4** Verify: `npm run typecheck`. Clean.
 
-- [ ] **Step 6.4** Commit: `feat(frames/p2): drift dialog — interactive resolution with durable per-decision writes`.
+- [ ] **Step 6.5** Commit: `feat(frames/p2): drift dialog — interactive resolution with durable per-decision writes`.
 
 ---
 
@@ -281,12 +314,23 @@ Replace Phase 1's `--adopt`-only path with the full apply sequence per spec § A
 
   1. **Resolve frame** — `loadManifest(framePath)`.
   2. **Validate** — `verifyAnchors` (already in Phase 1) plus new `requires`/`conflicts` enforcement: for each `manifest.requires`, the named frame must be in `applied_frames`; for each `manifest.conflicts`, the named frame must NOT be in `applied_frames`. Throw `DependencyError` (already exists) on either failure with the offending frame ids in the message.
-  3. **Same-version short-circuit** — if `applied_frames.<name>` exists at the same version: run `detectDrift`. No actionable drift → log no-op + return 0. Actionable drift → run `runDriftDialog`. Translate dialog results to a `Set<resource>` of "force-write" entries; subsequent writes gate on this set (write only resources whose drift the operator chose `take-frame` or `merged`). If all decisions are keep-local or deferred → no writes → return 0.
-  4. **Pre-apply hook** — if `manifest.hooks?.preApply` and not `--adopt`: print the hook command, prompt unless `--yes`, then run via `execFileSync` from `node:child_process` with the binary-and-args form: first arg `"/bin/sh"`, second arg `[join(rootPath, hookPath)]`, options `{ stdio: "inherit" }`. **Never the shell-string overload** — security rule from `CLAUDE.md`.
+
+     **Wildcard expansion in validation.** Phase 1 `verifyAnchors` skips `agents: ["*"]` entries entirely (see `commands/apply.ts` — its `--adopt` path explicitly continues past `*`). For the full-apply path the spec requires exhaustive validation in step 2 — "step 4 must not fail on a missing anchor because step 2 caught them all." Update `verifyAnchors` to accept a pre-resolved agent list (or call `resolveAgents` itself) so wildcard-scoped prompt anchor checks actually verify every matched agent's systemPrompt. The Phase 1 `--adopt` path can keep its skip semantics (adopt's whole premise is "the anchored content is already there"); only the full-apply path needs the strict check. One way to model this: extend `verifyAnchors` with an `agentResolver?: (selector: string[]) => Promise<string[]>` parameter — adopt passes nothing (skip), full-apply passes `(sel) => resolveAgents(db, sel)`.
+  3. **Same-version short-circuit** — if `applied_frames.<name>` exists at the same version: run `detectDrift`. No actionable drift → log no-op + return 0. Actionable drift → run `runDriftDialog`. Build a `Set<string>` of resource keys (the same `finding.resource` strings drift-detector emits — e.g., `"constitution:capabilities"`, `"prompts:rae:role-spec"`, `"skills:memory-hygiene"`) where the operator's decision was `take-frame` or `merged`; pass this set as a `forceWriteResources?: Set<string>` argument through to step 6's asset write loop. If all decisions are `keep-local` or `deferred` → no writes → return 0.
+
+     **How the gate threads through step 6.** The set is *only* populated in the same-version-with-drift path — fresh applies pass `undefined`, meaning "write everything." When defined:
+     - For each prospective asset write, build the same resource-key string the drift-detector would have emitted for that asset (e.g., for a constitution asset: `"constitution:" + asset.anchor`; for a skill: `"skills:" + asset.bundle`; for a prompt: `"prompts:" + agentId + ":" + asset.anchor`).
+     - If the key is **not** in `forceWriteResources`, skip the write. The operator either chose `keep-local`, `deferred`, or there's no drift on that resource — either way no overwrite is intended.
+     - If the key **is** in the set, write through the normal `asset-writer.write*` call. For `merged` decisions, substitute the operator's merged text in place of the frame's source text (the dialog already captured this in the `DialogResult.mergedText` field; thread it through to the writer as an optional override argument).
+
+     Constitution is the awkward case — multiple anchors may all hash into one document write. Treat it asset-by-asset: skip individual constitution assets whose key isn't in the set, but still capture `snapshotBefore` once at the start of the loop covering the assets that *do* get written.
+  4. **Pre-apply hook** — if `manifest.hooks?.preApply` and not `--adopt`: print the hook command, prompt unless `--yes`, then invoke `execFileSync` from `node:child_process` with the binary-and-args form: binary = literal string `"/bin/sh"` (hardcoded — **not** operator-controlled), args = `[join(rootPath, hookPath)]`, options = `{ stdio: "inherit" }`. **Do not** invoke the script directly as the binary (`execFileSync(scriptPath, [])`) — hooks are shell scripts and need a shell to interpret them, and the script path may include spaces or shebangs that don't expand correctly under direct execution.
+
+     The CLAUDE.md security rule is about the shell-string overload (`execSync` with a single concatenated command line) — a substitution-injection vector. The form used here pins the binary as a literal `"/bin/sh"` and passes the script path as a separate argument, which has no substitution surface in the JS layer. The fact that the shell script itself can do anything is by design — hooks exist to run pre/post-apply work the frame author specifies. The actual control over what hooks can do is the trust model (spec § Hooks: signed manifests + `--allow-hooks` for raw frames), not the JS-side invocation form.
   5. **Resolve agent selectors** — add helper `resolveAgents(db, selector: string[]): string[]`. `["*"]` → all `agent_definitions._id` sorted; explicit list → validate each exists, throw on missing.
   6. **Apply assets in fixed order** (skills → memory seeds → coreservers → schedule → prompts → constitution). Capture single `constitution.snapshotBefore` before the constitution loop. For each asset, call the matching `asset-writer.write*` and accumulate the resource records into a staged `AppliedResources`.
   7. **Stage record in memory** — do NOT write yet. Build `{ _id: name, version, appliedAt, appliedBy, manifest, resources, driftAccepted: [] }`.
-  8. **Post-apply hook** — same binary-and-args invocation pattern. On non-zero exit: run reverse-best-effort over what was just written (call each `asset-writer.remove*` for the staged resources), collect errors. Throw `PartialApplyError` if reversal itself fails, with a list of what was written and what couldn't be reversed.
+  8. **Post-apply hook** — identical invocation pattern to step 4: `execFileSync("/bin/sh", [join(rootPath, hookPath)], { stdio: "inherit" })`. On non-zero exit: run reverse-best-effort over what was just written (call each `asset-writer.remove*` for the staged resources), collect errors. Throw `PartialApplyError` if reversal itself fails, with a list of what was written and what couldn't be reversed.
   9. **Commit record** — `applied-frames-store.upsert(record)` (Phase 1 method).
   10. **SIGUSR1** — read `<servicePath>/hive.pid` if present; `process.kill(pid, "SIGUSR1")`. Skip silently if no pid file. Skip entirely if no asset writes occurred (same-version no-op or dialog-result-empty path).
 
@@ -356,11 +400,13 @@ node dist/cli.js frame remove test-full dodi                      # reverses eve
 node dist/cli.js frame list dodi                                  # test-full gone
 ```
 
-- [ ] **Step 9.4** Drift dialog smoke test: re-apply, then via `mongosh` append a literal `<!-- local edit -->` to the constitution, then re-apply same-version. Dialog should surface `constitution-text-changed`. Pick `(a) keep-local`. `audit` afterwards should show no actionable drift.
+- [ ] **Step 9.4** Drift dialog smoke test: re-apply, then via `mongosh` append a literal `<!-- local edit -->` to the constitution, then re-apply same-version. Dialog should surface `constitution-text-changed`. Pick `(a) keep-local`. `audit` afterwards should show no actionable drift. Then run the same path again but pick `(d) deferred` for the same finding — confirm the next `audit` still **shows** the finding (now as `info:`) but exits 0 (deferred is informational, not actionable, per Task 5.1).
 
-- [ ] **Step 9.5** Verify hive logs show SIGUSR1-triggered agent reload after both apply and remove.
+- [ ] **Step 9.5** Negative test for `requires`/`conflicts` enforcement: author a second throwaway frame at `~/.beekeeper/frames/test-requires/` whose `frame.yaml` has `requires: ["does-not-exist"]`. Run `node dist/cli.js frame apply ~/.beekeeper/frames/test-requires dodi`. Expect non-zero exit and a `DependencyError` mentioning `does-not-exist`. Cleanup: `rm -rf ~/.beekeeper/frames/test-requires`.
 
-- [ ] **Step 9.6** Cleanup: `rm -rf ~/.beekeeper/frames/test-full`.
+- [ ] **Step 9.6** Verify hive logs show SIGUSR1-triggered agent reload after both apply and remove.
+
+- [ ] **Step 9.7** Cleanup: `rm -rf ~/.beekeeper/frames/test-full`.
 
 ---
 
