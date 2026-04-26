@@ -1,4 +1,4 @@
-import type { PipelineLabel, TypeLabel, BlockLabel } from "./types.js";
+import type { PipelineLabel, TypeLabel, BlockLabel, RepoLabel } from "./types.js";
 
 export const TYPE_LABELS: readonly TypeLabel[] = [
   "type:trivial",
@@ -21,10 +21,16 @@ export function isBlockLabel(s: string): s is BlockLabel {
   return (BLOCK_LABELS as readonly string[]).includes(s);
 }
 
+/** `repo:<name>` is open-namespace; any non-empty suffix counts. */
+export function isRepoLabel(s: string): s is RepoLabel {
+  return s.startsWith("repo:") && s.length > "repo:".length;
+}
+
 export function isPipelineLabel(s: string): s is PipelineLabel {
   return (
     isTypeLabel(s) ||
     isBlockLabel(s) ||
+    isRepoLabel(s) ||
     s === "pipeline-auto" ||
     s === "epic" ||
     s === "qa:meta-review-due" ||
