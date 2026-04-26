@@ -5,6 +5,7 @@ import { AppliedFramesStore } from "../applied-frames-store.js";
 import { loadManifest } from "../manifest-loader.js";
 import { collectAnchorSet } from "../anchor-resolver.js";
 import { MissingAnchorError } from "../errors.js";
+import { extractAnchorNeighborhood } from "../text-utils.js";
 import type { AppliedFrameRecord, AppliedResources, FrameManifest } from "../types.js";
 import type { Db } from "mongodb";
 
@@ -146,23 +147,3 @@ async function buildAdoptRecord(db: Db, manifest: FrameManifest): Promise<Applie
   };
 }
 
-/**
- * Extract the text from `<a id="anchor">` to the next anchor (or end-of-document).
- * Returns empty string if anchor is not found.
- */
-export function extractAnchorNeighborhood(markdown: string, anchor: string): string {
-  const startRe = new RegExp(`<a\\s+id\\s*=\\s*"${escapeRe(anchor)}"\\s*(?:/?>\\s*</a>|/>|>)`);
-  const startMatch = markdown.match(startRe);
-  if (!startMatch || startMatch.index === undefined) return "";
-  const startIdx = startMatch.index;
-  const afterStart = startIdx + startMatch[0].length;
-  const nextAnchorRe = /<a\s+id\s*=\s*"[^"]+"\s*(?:\/?>\s*<\/a>|\/>|>)/g;
-  nextAnchorRe.lastIndex = afterStart;
-  const next = nextAnchorRe.exec(markdown);
-  const endIdx = next?.index ?? markdown.length;
-  return markdown.slice(startIdx, endIdx);
-}
-
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}

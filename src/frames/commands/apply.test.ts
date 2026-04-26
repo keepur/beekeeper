@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractAnchorNeighborhood } from "./apply.js";
+import { extractAnchorNeighborhood } from "../text-utils.js";
 
 describe("extractAnchorNeighborhood", () => {
   it("extracts text from anchor to next anchor", () => {
