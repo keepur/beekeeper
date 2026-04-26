@@ -2,7 +2,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
-import type { BeekeeperConfig, PipelineConfig } from "./types.js";
+import type { BeekeeperConfig, OrchestratorConfig, PipelineConfig } from "./types.js";
 import { createLogger } from "./logging/logger.js";
 
 const log = createLogger("beekeeper-config");
@@ -96,6 +96,65 @@ function discoverUserSkills(): string[] {
   return paths;
 }
 
+function parseOrchestrator(raw: unknown): OrchestratorConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object") {
+    throw new Error("beekeeper.yaml: pipeline.orchestrator must be an object");
+  }
+  const v = raw as Record<string, unknown>;
+
+  // stallThresholds
+  const st = v.stallThresholds;
+  if (!st || typeof st !== "object") {
+    throw new Error("beekeeper.yaml: pipeline.orchestrator.stallThresholds is required");
+  }
+  const stRaw = st as Record<string, unknown>;
+  function parseTier(name: string, v: unknown): { soft: number; hard: number } {
+    if (!v || typeof v !== "object") throw new Error(`pipeline.orchestrator.stallThresholds.${name} required`);
+    const r = v as Record<string, unknown>;
+    if (typeof r.soft !== "number" || typeof r.hard !== "number") {
+      throw new Error(`pipeline.orchestrator.stallThresholds.${name}.{soft,hard} must be numbers`);
+    }
+    if (r.soft >= r.hard) throw new Error(`pipeline.orchestrator.stallThresholds.${name}: soft must be < hard`);
+    return { soft: r.soft, hard: r.hard };
+  }
+  const stallThresholds = {
+    drafting: parseTier("drafting", stRaw.drafting),
+    review: parseTier("review", stRaw.review),
+    implementer: parseTier("implementer", stRaw.implementer),
+  };
+
+  // pipelineModel
+  const pm = v.pipelineModel;
+  if (!pm || typeof pm !== "object") throw new Error("pipeline.orchestrator.pipelineModel is required");
+  const pmRaw = pm as Record<string, unknown>;
+  for (const k of ["drafting", "review", "implementer"] as const) {
+    if (typeof pmRaw[k] !== "string" || !pmRaw[k]) {
+      throw new Error(`pipeline.orchestrator.pipelineModel.${k} must be a non-empty string`);
+    }
+  }
+  const pipelineModel = {
+    drafting: pmRaw.drafting as string,
+    review: pmRaw.review as string,
+    implementer: pmRaw.implementer as string,
+  };
+
+  // bashAllowlist
+  if (!Array.isArray(v.bashAllowlist) || v.bashAllowlist.length === 0) {
+    throw new Error("pipeline.orchestrator.bashAllowlist must be a non-empty array of regex strings");
+  }
+  for (const p of v.bashAllowlist) {
+    if (typeof p !== "string" || !p) {
+      throw new Error("pipeline.orchestrator.bashAllowlist entries must be non-empty strings");
+    }
+  }
+  const bashAllowlist = v.bashAllowlist as string[];
+
+  const jobTtlMs = typeof v.jobTtlMs === "number" && v.jobTtlMs > 0 ? v.jobTtlMs : 86_400_000;
+
+  return { stallThresholds, pipelineModel, bashAllowlist, jobTtlMs };
+}
+
 function parsePipeline(raw: unknown): PipelineConfig | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const v = raw as Record<string, unknown>;
@@ -116,6 +175,7 @@ function parsePipeline(raw: unknown): PipelineConfig | undefined {
     linearTeamKey: v.linearTeamKey,
     repoPaths,
     mainBranch: typeof v.mainBranch === "string" ? v.mainBranch : undefined,
+    orchestrator: parseOrchestrator(v.orchestrator),
   };
 }
 
