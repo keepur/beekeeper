@@ -1414,6 +1414,7 @@ describe("reassertVerdict", () => {
 ```typescript
 import type { TicketComment } from "./types.js";
 
+// Pipeline-authored mutex/spawn comments — internal mechanics, never operator evidence.
 const PIPELINE_PREFIXES = ["tick-lock-claim:", "tick-lock-release:", "tick-spawn-log:"];
 
 // Block-diagnostic comments are tick-authored too. They start with the label
@@ -1421,6 +1422,18 @@ const PIPELINE_PREFIXES = ["tick-lock-claim:", "tick-lock-release:", "tick-spawn
 // check so removing a block label without a separate operator comment correctly
 // re-applies the block.
 const BLOCK_DIAGNOSTIC_PREFIXES = ["block:human —", "block:external —", "block:ci —"];
+
+// Tick-authored status comments posted by handlers as work progresses (drafting
+// transitions, merge confirmations, review-output JSON). These are operational
+// breadcrumbs, not operator evidence. New tick-authored comment shapes should
+// be added here as handlers grow — convention: any tick-authored prose comment
+// that is not a real human resolution belongs in this list.
+const TICK_STATUS_PREFIXES = [
+  "Drafting handler:",
+  "Merged via",
+  "review-output",
+  "tick-",  // catch-all for any future tick-* comment shape
+];
 
 /**
  * Per spec §"Default unblock flow": for `block:human` and `block:external`,
@@ -1451,6 +1464,9 @@ export function hasUnblockEvidence(comments: TicketComment[]): boolean {
     if (PIPELINE_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
     // Tick-authored block-diagnostic comments are not operator evidence either.
     if (BLOCK_DIAGNOSTIC_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
+    // Tick-authored status comments (handler transitions, merge confirmations,
+    // reviewer-output JSON) are also tick mechanics, not operator evidence.
+    if (TICK_STATUS_PREFIXES.some((p) => trimmed.startsWith(p))) continue;
     return true;
   }
   return false;
@@ -1496,6 +1512,19 @@ describe("hasUnblockEvidence", () => {
         c("tick-lock-claim: runId=tick-1 action=draft-plan", "2026-04-26T00:00:00.000Z"),
         c("block:human — could not resolve target repo from ticket description", "2026-04-26T00:01:00.000Z"),
         c("tick-lock-release: runId=tick-1 outcome=skipped", "2026-04-26T00:01:30.000Z"),
+      ]),
+    ).toBe(false);
+  });
+
+  it("returns false on a blocked→advanced→re-blocked cycle with no operator evidence", () => {
+    // Realistic Phase 1 sequence: ticket gets blocked, later advances and the
+    // drafting handler posts a transition comment, then re-blocks. The
+    // transition comment is tick-authored — must not register as evidence.
+    expect(
+      hasUnblockEvidence([
+        c("block:human — initial block", "2026-04-26T00:00:00.000Z"),
+        c("Drafting handler: draft-plan review-clean → state Ready.", "2026-04-26T01:00:00.000Z"),
+        c("block:human — could not resolve target repo on second pass", "2026-04-26T02:00:00.000Z"),
       ]),
     ).toBe(false);
   });
@@ -2485,6 +2514,7 @@ describe("handleDrafting", () => {
 
 ```typescript
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolveRepo } from "../repo-resolver.js";
 import { buildImplementerPrompt } from "../prompts/implementer.js";
 import { blockHuman, type HandlerContext, type HandlerResult } from "./types.js";
