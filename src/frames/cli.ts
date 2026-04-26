@@ -3,6 +3,18 @@ import { listFrames } from "./commands/list.js";
 export async function runFrameCli(args: string[]): Promise<number> {
   const sub = args[0];
   switch (sub) {
+    case "apply": {
+      const framePath = args[1];
+      const instanceId = args[2];
+      if (!framePath || !instanceId) {
+        console.error("Usage: beekeeper frame apply <framePath> <instance> [--adopt]");
+        return 1;
+      }
+      const flags = args.slice(3);
+      const adopt = flags.includes("--adopt");
+      const { applyFrame } = await import("./commands/apply.js");
+      return await applyFrame(framePath, instanceId, { adopt });
+    }
     case "audit": {
       const instanceId = args[1];
       if (!instanceId) {
