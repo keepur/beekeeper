@@ -128,12 +128,20 @@ export interface DriftDecision {
 
 Phase 1 `apply.ts` defines `extractAnchorNeighborhood` and a local `escapeRe` helper. Phase 2 needs both in `asset-writer.ts` and `drift-detector.ts`. Importing from `commands/apply.ts` would create a layering inversion (commands depending on commands). Extract to a sibling utils module.
 
-- [ ] **Step 2.1** Create `src/frames/text-utils.ts` with five exports. Behaviour must match the existing inline implementations in Phase 1 `apply.ts` exactly:
+- [ ] **Step 2.1** Create `src/frames/text-utils.ts` with six exports. Behaviour must match the existing inline implementations in Phase 1 `apply.ts` exactly (where applicable):
   - `escapeRe(s: string): string`
   - `extractAnchorNeighborhood(markdown: string, anchor: string): string` — finds the `<a id="anchor">` opener (with or without closing tag) and returns the substring from that opener to the next anchor opener or EOF.
   - `sha256Text(text: string): string`
   - `sha256File(path: string): string`
   - `computeBundleHash(dir: string): string` — sha256 of `SKILL.md` if present, else sha256 of the alphabetically first file. Empty dir → sha256 of empty string.
+  - `resourceKey(...): string` — **canonical resource identifier** used in two places: `drift-detector.ts` emits these in `DriftFinding.resource`, and `apply.ts` rebuilds the same key per prospective asset write to match against the same-version `forceWriteResources` set. Defining it once here prevents silent drift between detector keys and apply-loop keys. Overloads:
+    - `resourceKey("constitution", anchor: string)` → `"constitution:<anchor>"`
+    - `resourceKey("skills", bundle: string)` → `"skills:<basename(bundle)>"` — basename so the manifest's `bundle: "skills/memory-hygiene"` and the writer's `<servicePath>/skills/memory-hygiene/` produce the same key
+    - `resourceKey("coreservers", agentId: string, server: string)` → `"coreservers:<agentId>:<server>"`
+    - `resourceKey("schedule", agentId: string, task: string)` → `"schedule:<agentId>:<task>"`
+    - `resourceKey("prompts", agentId: string, anchor: string)` → `"prompts:<agentId>:<anchor>"`
+    - `resourceKey("seeds", agentId: string, contentHash: string)` → `"seeds:<agentId>:<contentHash[:8]>"` — first 8 hex chars of the hash, both for readability in audit output and to align with how seeds are conceptually identified by content (not by the ulid `_id`)
+    - `resourceKey("partial-apply", kind: string, target: string)` → `"<kind>:<target>"` (delegating overload used by `PartialApplyError` in Task 7 to label what was/wasn't reversed; `kind`/`target` are arbitrary so this is just `${kind}:${target}` — exists for symmetry with the other paths)
 
 - [ ] **Step 2.2** In `commands/apply.ts`, remove the local `extractAnchorNeighborhood` and `escapeRe` definitions; replace internal call sites with imports from `../text-utils.js`. Also remove the existing public re-export of `extractAnchorNeighborhood` from `apply.ts` (it was a Phase 1 implementation detail; Phase 2 callers go through `text-utils.ts`).
 
@@ -209,6 +217,8 @@ Phase 1 audit only checks anchor presence. Phase 2 upgrades to full text-diff pe
 
   All detail strings must include the frame id, resource type, and what specifically diverged — operator should be able to act on the finding without re-querying state.
 
+  **All `finding.resource` strings MUST be produced by `text-utils.resourceKey(...)`** (defined in Task 2). The same key is reconstructed in `apply.ts` (Task 7 step 3) for the same-version `forceWriteResources` gate; key drift between the two sites silently no-ops the gate, so both sides go through one helper.
+
 - [ ] **Step 4.2** Create `drift-detector.test.ts`. Three tests minimum, mocking Db: clean-state (no findings), constitution-text-changed flagged, constitution-anchor-missing flagged. Use a thin `mockDb` factory that returns `{ findOne, find: () => ({ toArray }) }` shape with hand-keyed responses.
 
 - [ ] **Step 4.3** Verify: `npm run typecheck && npx vitest run src/frames/drift-detector.test.ts`. Three tests pass.
@@ -234,7 +244,10 @@ Phase 1's audit checks anchor presence only. Replace with `detectDrift` + `drift
 
 - [ ] **Step 5.3** Exit code: 1 if any actionable finding remains after `driftAccepted` filtering; 0 if clean or only informational.
 
-- [ ] **Step 5.4** Update `audit.test.ts` to match the new output shape. The Phase 1 test asserted on the anchor-presence message text — it needs to assert on the new `drift:` / `info:` lines.
+- [ ] **Step 5.4** Update `audit.test.ts` to match the new output shape. The Phase 1 test asserted on the anchor-presence message text — it needs to assert on the new `drift:` / `info:` lines. Add three explicit cases:
+  - **Clean state** — no drift, exit code 0, no `drift:` lines.
+  - **Actionable drift** — one `constitution-text-changed` finding with no decision, exit code 1, line begins with `drift:`.
+  - **Deferred-only finding** — same physical drift but `driftAccepted: [{ resource, decision: "deferred", againstVersion: <currentVersion> }]`, exit code **0**, line begins with `info:`. This is the spec-mandated "audit will continue to flag" semantics — the line still surfaces, but doesn't trip CI exit code.
 
 - [ ] **Step 5.5** Verify: `npm run check`. Audit tests pass; KPR-89 exit-code behaviour preserved.
 
@@ -316,21 +329,27 @@ Replace Phase 1's `--adopt`-only path with the full apply sequence per spec § A
   2. **Validate** — `verifyAnchors` (already in Phase 1) plus new `requires`/`conflicts` enforcement: for each `manifest.requires`, the named frame must be in `applied_frames`; for each `manifest.conflicts`, the named frame must NOT be in `applied_frames`. Throw `DependencyError` (already exists) on either failure with the offending frame ids in the message.
 
      **Wildcard expansion in validation.** Phase 1 `verifyAnchors` skips `agents: ["*"]` entries entirely (see `commands/apply.ts` — its `--adopt` path explicitly continues past `*`). For the full-apply path the spec requires exhaustive validation in step 2 — "step 4 must not fail on a missing anchor because step 2 caught them all." Update `verifyAnchors` to accept a pre-resolved agent list (or call `resolveAgents` itself) so wildcard-scoped prompt anchor checks actually verify every matched agent's systemPrompt. The Phase 1 `--adopt` path can keep its skip semantics (adopt's whole premise is "the anchored content is already there"); only the full-apply path needs the strict check. One way to model this: extend `verifyAnchors` with an `agentResolver?: (selector: string[]) => Promise<string[]>` parameter — adopt passes nothing (skip), full-apply passes `(sel) => resolveAgents(db, sel)`.
-  3. **Same-version short-circuit** — if `applied_frames.<name>` exists at the same version: run `detectDrift`. No actionable drift → log no-op + return 0. Actionable drift → run `runDriftDialog`. Build a `Set<string>` of resource keys (the same `finding.resource` strings drift-detector emits — e.g., `"constitution:capabilities"`, `"prompts:rae:role-spec"`, `"skills:memory-hygiene"`) where the operator's decision was `take-frame` or `merged`; pass this set as a `forceWriteResources?: Set<string>` argument through to step 6's asset write loop. If all decisions are `keep-local` or `deferred` → no writes → return 0.
+  3. **Same-version short-circuit** — if `applied_frames.<name>` exists at the same version: run `detectDrift`. No actionable drift → log no-op + return 0. Actionable drift → run `runDriftDialog`. Build a `Set<string>` of resource keys where the operator's decision was `take-frame` or `merged`; pass this set as `forceWriteResources?: Set<string>` to step 6's asset write loop. If all decisions are `keep-local` or `deferred` → no writes → return 0.
 
      **How the gate threads through step 6.** The set is *only* populated in the same-version-with-drift path — fresh applies pass `undefined`, meaning "write everything." When defined:
-     - For each prospective asset write, build the same resource-key string the drift-detector would have emitted for that asset (e.g., for a constitution asset: `"constitution:" + asset.anchor`; for a skill: `"skills:" + asset.bundle`; for a prompt: `"prompts:" + agentId + ":" + asset.anchor`).
-     - If the key is **not** in `forceWriteResources`, skip the write. The operator either chose `keep-local`, `deferred`, or there's no drift on that resource — either way no overwrite is intended.
-     - If the key **is** in the set, write through the normal `asset-writer.write*` call. For `merged` decisions, substitute the operator's merged text in place of the frame's source text (the dialog already captured this in the `DialogResult.mergedText` field; thread it through to the writer as an optional override argument).
+     - For each prospective asset write, build the resource key via `text-utils.resourceKey(...)` (Task 2) — the **same helper** the drift-detector calls in Task 4. Per-asset:
+       - Constitution: `resourceKey("constitution", asset.anchor)`
+       - Skill: `resourceKey("skills", asset.bundle)` (helper basenames internally)
+       - CoreServer: one key per `(agentId, server)` pair: `resourceKey("coreservers", agentId, server)`
+       - Schedule: one key per `(agentId, task)` resolved slot: `resourceKey("schedule", agentId, task)`
+       - Prompt: per `(agentId, asset.anchor)`: `resourceKey("prompts", agentId, asset.anchor)`
+       - Memory seed: per `(agentId, contentHash)` after content-hashing the seed file: `resourceKey("seeds", agentId, contentHash)`
+     - If the key is **not** in `forceWriteResources`, skip the write. Either the operator chose `keep-local`/`deferred`, or there's no drift on that resource — no overwrite intended.
+     - If the key **is** in the set, call the matching `asset-writer.write*` normally. For `merged` decisions, the dialog already captured the operator's merged text in `DialogResult.mergedText`; thread it through to the writer as an optional override argument (the writer prefers `mergedText` over the frame's source text when present).
 
-     Constitution is the awkward case — multiple anchors may all hash into one document write. Treat it asset-by-asset: skip individual constitution assets whose key isn't in the set, but still capture `snapshotBefore` once at the start of the loop covering the assets that *do* get written.
+     Constitution is the awkward case — multiple anchors hash into one document write. Treat it asset-by-asset: skip individual constitution assets whose key isn't in the set, but still capture `snapshotBefore` once at the start of the loop covering the assets that *do* get written.
   4. **Pre-apply hook** — if `manifest.hooks?.preApply` and not `--adopt`: print the hook command, prompt unless `--yes`, then invoke `execFileSync` from `node:child_process` with the binary-and-args form: binary = literal string `"/bin/sh"` (hardcoded — **not** operator-controlled), args = `[join(rootPath, hookPath)]`, options = `{ stdio: "inherit" }`. **Do not** invoke the script directly as the binary (`execFileSync(scriptPath, [])`) — hooks are shell scripts and need a shell to interpret them, and the script path may include spaces or shebangs that don't expand correctly under direct execution.
 
      The CLAUDE.md security rule is about the shell-string overload (`execSync` with a single concatenated command line) — a substitution-injection vector. The form used here pins the binary as a literal `"/bin/sh"` and passes the script path as a separate argument, which has no substitution surface in the JS layer. The fact that the shell script itself can do anything is by design — hooks exist to run pre/post-apply work the frame author specifies. The actual control over what hooks can do is the trust model (spec § Hooks: signed manifests + `--allow-hooks` for raw frames), not the JS-side invocation form.
   5. **Resolve agent selectors** — add helper `resolveAgents(db, selector: string[]): string[]`. `["*"]` → all `agent_definitions._id` sorted; explicit list → validate each exists, throw on missing.
   6. **Apply assets in fixed order** (skills → memory seeds → coreservers → schedule → prompts → constitution). Capture single `constitution.snapshotBefore` before the constitution loop. For each asset, call the matching `asset-writer.write*` and accumulate the resource records into a staged `AppliedResources`.
   7. **Stage record in memory** — do NOT write yet. Build `{ _id: name, version, appliedAt, appliedBy, manifest, resources, driftAccepted: [] }`.
-  8. **Post-apply hook** — identical invocation pattern to step 4: `execFileSync("/bin/sh", [join(rootPath, hookPath)], { stdio: "inherit" })`. On non-zero exit: run reverse-best-effort over what was just written (call each `asset-writer.remove*` for the staged resources), collect errors. Throw `PartialApplyError` if reversal itself fails, with a list of what was written and what couldn't be reversed.
+  8. **Post-apply hook** — identical invocation pattern to step 4: `execFileSync("/bin/sh", [join(rootPath, hookPath)], { stdio: "inherit" })`. On non-zero exit: run reverse-best-effort over what was just written (call each `asset-writer.remove*` for the staged resources), collect errors. Throw `PartialApplyError` if reversal itself fails. **Both the `written` and `unreversed` arrays on `PartialApplyError` use `resourceKey()` strings as labels** — same canonical form as `forceWriteResources` and `DriftFinding.resource`, so operators see one consistent identifier across drift, dialog, audit output, and error messages. `unreversed` entries should append the underlying error message in parentheses (e.g., `"skills:memory-hygiene (ENOENT: bundle dir disappeared)"`).
   9. **Commit record** — `applied-frames-store.upsert(record)` (Phase 1 method).
   10. **SIGUSR1** — read `<servicePath>/hive.pid` if present; `process.kill(pid, "SIGUSR1")`. Skip silently if no pid file. Skip entirely if no asset writes occurred (same-version no-op or dialog-result-empty path).
 
@@ -341,17 +360,46 @@ Replace Phase 1's `--adopt`-only path with the full apply sequence per spec § A
   - Add `case "remove":` (Task 8 fills the import).
   - Update `printUsage()` text.
 
-- [ ] **Step 7.5** Verify: `npm run check`. Phase 1 tests adjusted by Tasks 1+2 must still pass.
+- [ ] **Step 7.5** Add a test case in `commands/apply.test.ts` exercising the wildcard resolver path: a frame with `prompts: [{ anchor: "role-spec", agents: ["*"], file: "..." }]` against a test instance where one of the resolved agents is missing the `<a id="role-spec">` marker. Assert `applyFrame` throws `MissingAnchorError` mentioning that specific agent id. This is the only assertion that the resolver actually fires under wildcards — Phase 1's existing tests pass explicit agent IDs and would still pass even if wildcard handling silently skipped.
 
-- [ ] **Step 7.6** Commit: `feat(frames/p2): full apply write path — hooks, asset writes, same-version drift, SIGUSR1`.
+- [ ] **Step 7.6** Verify: `npm run check`. Phase 1 tests adjusted by Tasks 1+2 must still pass; new wildcard test passes.
+
+- [ ] **Step 7.7** Commit: `feat(frames/p2): full apply write path — hooks, asset writes, same-version drift, SIGUSR1`.
 
 ---
 
-## Task 8 — `frame remove`
+## Task 8 — Extend `--adopt` to snapshot all six asset types
+
+**Files:** Modify `src/frames/commands/apply.ts`.
+
+Phase 1's `buildAdoptRecord` only populates `resources.constitution`; the other five resource blocks are left undefined (there's an explicit TODO comment). With Phase 2's drift-detector walking all six blocks, an adopted frame returns *false-clean* on `audit` for skills/coreservers/schedule/prompts/seeds — none of those were ever snapshotted, so the detector skips them entirely. Operators would see green when there's actually unsnapshotted state. Closing this gap is required for adopt to coexist with Phase 2's full drift detection.
+
+- [ ] **Step 8.1** Extend `buildAdoptRecord` so under `--adopt`, all six resource blocks are populated from current instance state:
+
+  | Block | What to capture |
+  |---|---|
+  | `skills` | For each `manifest.skills[].bundle`: read `<servicePath>/skills/<basename(bundle)>/`, compute `text-utils.computeBundleHash(bundleDir)`, record `{ bundle, sha256, replacedClaimFrom: null }`. If the bundle directory is absent at adopt time, throw `MissingAnchorError` (or a sibling — adopt's "anchored content already present" premise extends to skill bundles). |
+  | `coreservers` | For each `manifest.coreservers[]`: resolve agents (`["*"]` → all `agent_definitions._id` sorted; explicit list → validated). For each resolved agent, record only the entries from `asset.add[]` that **already** exist in the agent's `coreServers` — adopt is "claim what's there," not "add what's missing." Empty arrays are valid (the operator may have to fix manually). |
+  | `schedule` | For each `manifest.schedule[]`: resolve agents and per-agent slot via `resolveScheduleSlots`. For each slot, look up the agent's existing schedule entry by `task` name. If the agent already has that task at any cron, record `{ task, cron: <currentCron>, pattern: <fromAsset>, windowSlot: <fromSlot>, replacedClaimFrom: null }`. If the agent does NOT have the task scheduled, record nothing for that agent (under-coverage; surfaced on next `audit` as `schedule-missing`). |
+  | `prompts` | For each `manifest.prompts[]`: resolve agents. For each agent, capture `snapshotBefore = currentSystemPrompt` and `insertedText[anchor] = extractAnchorNeighborhood(currentSystemPrompt, asset.anchor)`. Anchor must already be present (full-apply rule applies — see Task 7 step 2's `verifyAnchors` extension). |
+  | `memorySeeds` | For each `manifest.memorySeeds[]`: read the seed file from the frame, compute its content-hash. Look up `agent_memory.findOne({ agentId: asset.agent, contentHash })`. If found, record `{ id, contentHash, tier: asset.tier, agent: asset.agent, replacedClaimFrom: null }`. If not found, record nothing — adopt doesn't insert; the operator runs full apply later or accepts that this seed is uncovered. |
+  | `constitution` | Already populated by Phase 1 — leave as-is, but re-verify the structure now matches the expanded `AppliedResources` interface from Task 1. |
+
+- [ ] **Step 8.2** Drop the existing TODO comment in `buildAdoptRecord` — replace it with a one-line note that the function is now fully populating per Phase 2.
+
+- [ ] **Step 8.3** Update `commands/apply.test.ts`: extend the existing `--adopt` test case to assert that all six resource blocks are populated when the corresponding asset types are present in the manifest. At minimum, mock or set up state so one of each asset type is exercised; the assertion is shape-only (`record.resources.skills.length > 0`, etc.), not content-correctness — that's covered by the smoke test in Task 10.
+
+- [ ] **Step 8.4** Verify: `npm run check`. Adopt tests pass with the extended assertions.
+
+- [ ] **Step 8.5** Commit: `feat(frames/p2): extend --adopt to snapshot all six asset types`.
+
+---
+
+## Task 9 — `frame remove`
 
 **Files:** Create `src/frames/commands/remove.ts`, `src/frames/commands/remove.test.ts`. Modify `src/frames/cli.ts`.
 
-- [ ] **Step 8.1** Create `commands/remove.ts`:
+- [ ] **Step 9.1** Create `commands/remove.ts`:
 
   ```typescript
   export async function removeFrame(
@@ -368,27 +416,27 @@ Replace Phase 1's `--adopt`-only path with the full apply sequence per spec § A
   4. After reversal: if the error list is empty, `store.remove(frameName)` and `signalHive(servicePath)`. If non-empty, throw `PartialApplyError` with the per-asset error breakdown — record stays in `applied_frames` so the operator can retry remove after fixing.
   5. Force is recorded only in stderr log, not in the (now-deleted) record.
 
-- [ ] **Step 8.2** Create `remove.test.ts`. Two tests with mocked store:
+- [ ] **Step 9.2** Create `remove.test.ts`. Two tests with mocked store:
   - Refuses with `DependencyError` when `findDependents` returns a non-empty list and force is false.
   - Proceeds past the dependents check when `force: true` (the rest of the path may fail on missing mock data; assert only that the thrown error is not `DependencyError`).
 
-- [ ] **Step 8.3** Wire `cli.ts` `case "remove":` to call `removeFrame(frameName, instanceId, { force: flags.has("--force") })`.
+- [ ] **Step 9.3** Wire `cli.ts` `case "remove":` to call `removeFrame(frameName, instanceId, { force: flags.has("--force") })`.
 
-- [ ] **Step 8.4** Verify: `npm run check`. Two new tests pass.
+- [ ] **Step 9.4** Verify: `npm run check`. Two new tests pass.
 
-- [ ] **Step 8.5** Commit: `feat(frames/p2): frame remove with dependents check + reverse-best-effort rollback`.
+- [ ] **Step 9.5** Commit: `feat(frames/p2): frame remove with dependents check + reverse-best-effort rollback`.
 
 ---
 
-## Task 9 — End-to-end smoke test against dodi
+## Task 10 — End-to-end smoke test against dodi
 
 Manual validation, no commit. Mirrors Phase 1's smoke-test pattern (Phase 1 task 10).
 
-- [ ] **Step 9.1** Confirm dodi has `instances.dodi.servicePath` set in `~/.beekeeper/beekeeper.yaml`. Confirm anchors `memory` and `capabilities` exist in dodi's constitution (`mongosh hive_dodi --eval 'db.memory.findOne({path:"shared/constitution.md"}).content' | grep '<a id'`).
+- [ ] **Step 10.1** Confirm dodi has `instances.dodi.servicePath` set in `~/.beekeeper/beekeeper.yaml`. Confirm anchors `memory` and `capabilities` exist in dodi's constitution (`mongosh hive_dodi --eval 'db.memory.findOne({path:"shared/constitution.md"}).content' | grep '<a id'`).
 
-- [ ] **Step 9.2** Author a smoke-test frame at `~/.beekeeper/frames/test-full/`. Minimal `frame.yaml` exercising all six asset types — one constitution `replace-anchor` on `capabilities`, one skill bundle (any throwaway), one coreServer add (`keychain` to `["rae"]`), one explicit-cron schedule on rae, one memory seed for rae (hot tier), one prompt anchor on rae (ensure rae has a `<a id="role-spec">` marker — add it manually if missing).
+- [ ] **Step 10.2** Author a smoke-test frame at `~/.beekeeper/frames/test-full/`. Minimal `frame.yaml` exercising all six asset types — one constitution `replace-anchor` on `capabilities`, one skill bundle (any throwaway), one coreServer add (`keychain` to `["rae"]`), one explicit-cron schedule on rae, one memory seed for rae (hot tier), one prompt anchor on rae (ensure rae has a `<a id="role-spec">` marker — add it manually if missing).
 
-- [ ] **Step 9.3** Run the apply / audit / remove cycle:
+- [ ] **Step 10.3** Run the apply / audit / remove cycle:
 
 ```bash
 cd ~/github/beekeeper-KPR-85-plan
@@ -400,13 +448,13 @@ node dist/cli.js frame remove test-full dodi                      # reverses eve
 node dist/cli.js frame list dodi                                  # test-full gone
 ```
 
-- [ ] **Step 9.4** Drift dialog smoke test: re-apply, then via `mongosh` append a literal `<!-- local edit -->` to the constitution, then re-apply same-version. Dialog should surface `constitution-text-changed`. Pick `(a) keep-local`. `audit` afterwards should show no actionable drift. Then run the same path again but pick `(d) deferred` for the same finding — confirm the next `audit` still **shows** the finding (now as `info:`) but exits 0 (deferred is informational, not actionable, per Task 5.1).
+- [ ] **Step 10.4** Drift dialog smoke test: re-apply, then via `mongosh` append a literal `<!-- local edit -->` to the constitution, then re-apply same-version. Dialog should surface `constitution-text-changed`. Pick `(a) keep-local`. `audit` afterwards should show no actionable drift. Then run the same path again but pick `(d) deferred` for the same finding — confirm the next `audit` still **shows** the finding (now as `info:`) but exits 0 (deferred is informational, not actionable, per Task 5.1).
 
-- [ ] **Step 9.5** Negative test for `requires`/`conflicts` enforcement: author a second throwaway frame at `~/.beekeeper/frames/test-requires/` whose `frame.yaml` has `requires: ["does-not-exist"]`. Run `node dist/cli.js frame apply ~/.beekeeper/frames/test-requires dodi`. Expect non-zero exit and a `DependencyError` mentioning `does-not-exist`. Cleanup: `rm -rf ~/.beekeeper/frames/test-requires`.
+- [ ] **Step 10.5** Negative test for `requires`/`conflicts` enforcement: author a second throwaway frame at `~/.beekeeper/frames/test-requires/` whose `frame.yaml` has `requires: ["does-not-exist"]`. Run `node dist/cli.js frame apply ~/.beekeeper/frames/test-requires dodi`. Expect non-zero exit and a `DependencyError` mentioning `does-not-exist`. Cleanup: `rm -rf ~/.beekeeper/frames/test-requires`.
 
-- [ ] **Step 9.6** Verify hive logs show SIGUSR1-triggered agent reload after both apply and remove.
+- [ ] **Step 10.6** Verify hive logs show SIGUSR1-triggered agent reload after both apply and remove.
 
-- [ ] **Step 9.7** Cleanup: `rm -rf ~/.beekeeper/frames/test-full`.
+- [ ] **Step 10.7** Cleanup: `rm -rf ~/.beekeeper/frames/test-full`.
 
 ---
 
@@ -429,7 +477,8 @@ node dist/cli.js frame list dodi                                  # test-full go
 - [ ] Same-version re-apply with drift triggers the interactive dialog; decisions are written to `driftAccepted` per-decision (not at session end).
 - [ ] Hooks are invoked via the binary-and-args form of `execFileSync`, never the shell-string overload.
 - [ ] No `any` in production code.
-- [ ] Smoke test (Task 9) against dodi passes.
+- [ ] `--adopt` snapshots all six resource types (Task 8) — drift-detector returns no false-clean findings on adopted frames.
+- [ ] Smoke test (Task 10) against dodi passes.
 - [ ] PR base is `KPR-83-frames`, not `main`.
 
 ## Test coverage summary
@@ -439,7 +488,8 @@ node dist/cli.js frame list dodi                                  # test-full go
 | `asset-writer.test.ts` | 5 | Unit |
 | `drift-detector.test.ts` | 3 | Unit |
 | `commands/remove.test.ts` | 2 | Unit |
-| `commands/audit.test.ts` (updated) | existing + drift-finding shape | Unit |
-| Task 9 smoke test | 6 manual checks | Integration (live dodi) |
+| `commands/audit.test.ts` (updated) | clean / actionable-drift / deferred-as-info | Unit |
+| `commands/apply.test.ts` (updated) | wildcard resolver + adopt-record-shape additions | Unit |
+| Task 10 smoke test | 7 manual checks | Integration (live dodi) |
 
-Total: 10 new automated tests + 1 modified existing test + 6 manual smoke checks. Combined with Phase 1's 21 automated tests, the post-Phase-2 module total is 31 automated tests covering loader → resolver → store → audit → apply → remove.
+Total: 10 new automated tests + ~3 modified/added cases on existing tests + 7 manual smoke checks. Combined with Phase 1's 21 automated tests, the post-Phase-2 module total is ~31 automated tests covering loader → resolver → store → audit → apply → remove.
