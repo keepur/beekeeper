@@ -421,7 +421,7 @@ git commit -m "feat(skill): Phase 4 findings doc + signature contract + write-fa
 
 ```typescript
 import { existsSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "../logging/logger.js";
 
@@ -475,8 +475,10 @@ export function installSkillSymlink(
   const targetPath = resolveBundledSkillPath(skillName);
   const linkPath = resolveLinkPath(skillName, baseDir);
 
-  // Ensure parent directory exists.
-  mkdirSync(join(homedir(), ".claude", "skills"), { recursive: true });
+  // Ensure parent directory exists. Derive parent from linkPath itself so we
+  // honor baseDir during tests — mkdirSync(join(homedir(), ...)) would create
+  // a side-effect directory in the real user's home, breaking test isolation.
+  mkdirSync(dirname(linkPath), { recursive: true });
 
   // Sanity: the target must actually exist before we link to it.
   if (!existsSync(targetPath) || !existsSync(join(targetPath, "SKILL.md"))) {
