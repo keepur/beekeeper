@@ -1,5 +1,5 @@
 import type { Db, Collection } from "mongodb";
-import type { AppliedFrameRecord } from "./types.js";
+import type { AppliedFrameRecord, DriftDecision } from "./types.js";
 
 const COLLECTION = "applied_frames";
 
@@ -20,6 +20,13 @@ export class AppliedFramesStore {
 
   async upsert(record: AppliedFrameRecord): Promise<void> {
     await this.coll.replaceOne({ _id: record._id }, record, { upsert: true });
+  }
+
+  async appendDriftDecision(frameName: string, decision: DriftDecision): Promise<void> {
+    await this.coll.updateOne(
+      { _id: frameName },
+      { $push: { driftAccepted: decision } },
+    );
   }
 
   async remove(name: string): Promise<boolean> {
