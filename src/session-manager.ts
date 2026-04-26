@@ -581,11 +581,24 @@ export class SessionManager {
    * formatted as a single session message. `args` is the raw split arg list.
    */
   private async handlePipelineTick(sessionId: string, args: string[]): Promise<void> {
+    const apiKey = process.env.LINEAR_API_KEY;
+    if (!apiKey || !this.config.pipeline) {
+      const missing: string[] = [];
+      if (!apiKey) missing.push("LINEAR_API_KEY env var");
+      if (!this.config.pipeline) missing.push("'pipeline:' block in beekeeper.yaml");
+      this.send({
+        type: "message",
+        text: `pipeline-tick not configured: missing ${missing.join(" and ")}.`,
+        sessionId,
+        final: true,
+      });
+      return;
+    }
     const { runPipelineCli } = await import("./pipeline/cli.js");
     const result = await runPipelineCli({
       argv: args,
       config: this.config.pipeline,
-      apiKey: process.env.LINEAR_API_KEY,
+      apiKey,
     });
     const text = [...result.output, ...result.errors].join("\n");
     this.send({ type: "message", text, sessionId, final: true });

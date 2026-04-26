@@ -78,6 +78,29 @@ describe("handleReview", () => {
     expect(result.detail).toContain("APPROVE");
   });
 
+  it("In Review + spawn-log present + no reviewer output → wait, do not re-spawn", async () => {
+    // Reviewer is in flight: spawn-log on the ticket but no JSON verdict
+    // comment yet. The handler must skip (not re-spawn) so the in-flight
+    // reviewer's output is what advances the state on the next tick.
+    const comments: TicketComment[] = [
+      {
+        id: "c-spawn",
+        body: "tick-spawn-log: runId=tick-1 agentId=agent-01ABC",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    const spawn = vi.fn();
+    const result = await handleReview({
+      client: clientStub(),
+      ticket: ticket({ state: "In Review", comments }),
+      decision,
+      config,
+      spawn,
+    });
+    expect(result.outcome).toBe("skipped");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("REQUEST CHANGES → block:human with finding summary", async () => {
     const comments: TicketComment[] = [
       {

@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { resolveRepo } from "../repo-resolver.js";
 import { buildImplementerPrompt } from "../prompts/implementer.js";
 import { blockHuman, type HandlerContext, type HandlerResult } from "./types.js";
@@ -38,16 +37,25 @@ export async function handlePickup(ctx: HandlerContext): Promise<HandlerResult> 
   }
 
   const planPath = `docs/plans/${ctx.ticket.identifier.toLowerCase()}.md`;
-  // Per spec §"Pickup action" item 1: refuse to pick up if the plan only
-  // exists in the operator's working tree, not committed to the repo branch
-  // the implementer's worktree will resolve. Without this guard, the
-  // implementer subagent gets a non-existent plan path and fails late.
-  const planAbs = `${repo.path}/${planPath}`;
-  if (!existsSync(planAbs)) {
+  // Per spec §"Pickup action" item 1: refuse to pick up if the plan is not
+  // committed on the epic branch the implementer's worktree will resolve.
+  // `git show <epicBranch>:<planPath>` is the authoritative check —
+  // succeeds only if the file exists on that ref. A working-tree check
+  // (existsSync) would pass for plans that exist locally but haven't been
+  // pushed to the epic branch yet, exactly the failure mode this guard
+  // is supposed to catch.
+  let planOnEpicBranch = false;
+  try {
+    execFileSync("git", ["-C", repo.path, "show", `${epicBranch}:${planPath}`], { stdio: "ignore" });
+    planOnEpicBranch = true;
+  } catch {
+    // git show errors when the path is missing on the ref
+  }
+  if (!planOnEpicBranch) {
     return blockHuman(
       ctx.client,
       ctx.ticket,
-      `plan file not found at ${planPath} — ensure plan is committed to the epic branch before pickup`,
+      `plan file not found at ${planPath} on branch ${epicBranch} — ensure plan is committed and pushed before pickup`,
     );
   }
 

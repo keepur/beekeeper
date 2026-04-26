@@ -57,18 +57,23 @@ export class LinearClient {
   async getTicketState(identifier: string): Promise<TicketState> {
     const issue = await this.sdk.issue(identifier);
 
-    const [labelsConn, commentsConn, attachmentsConn, relationsConn, stateRel, parentRel] =
+    const [labelsConn, commentsConn, attachmentsConn, inverseRelationsConn, stateRel, parentRel] =
       await Promise.all([
         issue.labels(),
         issue.comments(),
         issue.attachments(),
-        issue.relations(),
+        // For blockedBy semantics we need INCOMING block relations: other
+        // issues with type=blocks pointing at this ticket. `issue.relations()`
+        // returns OUTGOING relations (this issue blocking others) — wrong
+        // direction. `issue.inverseRelations()` returns relations where this
+        // issue is the relatedIssue, i.e., on the receiving end of "blocks".
+        // Filter is client-side because @linear/sdk 39.x doesn't accept a
+        // server-side filter on relations queries.
+        issue.inverseRelations(),
         issue.state,
         issue.parent,
       ]);
-    // Linear's `issue.relations()` query does not accept a server-side filter
-    // (per @linear/sdk 39.x). Filter client-side to "blocks"-typed relations.
-    const blockedByRelations = relationsConn.nodes.filter((rel) => rel.type === "blocks");
+    const blockedByRelations = inverseRelationsConn.nodes.filter((rel) => rel.type === "blocks");
 
     const labels: PipelineLabel[] = labelsConn.nodes
       .map((l) => l.name)

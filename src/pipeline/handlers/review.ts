@@ -5,7 +5,11 @@ import { blockHuman, type HandlerContext, type HandlerResult } from "./types.js"
 import type { TicketAttachment, TicketComment } from "../types.js";
 
 const REVIEWER_OUTPUT_HEAD = /```json\s*\{[\s\S]*?"verdict"\s*:/;
-const SPAWN_REVIEWER_PREFIX = /^tick-spawn-log:.*kind=code-review/;
+// Any spawn-log on an In Review ticket implies a reviewer is in flight.
+// (Drafting/pickup/merge spawns happen in earlier states, not In Review.)
+// The actual spawn-log comment format written by mutex.logSpawn is
+// `tick-spawn-log: runId=<id> agentId=<id>` — no `kind=` field.
+const SPAWN_REVIEWER_PREFIX = /^tick-spawn-log:/;
 
 function findPrAttachment(attachments: TicketAttachment[]): TicketAttachment | undefined {
   return attachments.find((a) => /github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(a.url));
