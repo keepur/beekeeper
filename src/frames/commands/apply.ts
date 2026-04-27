@@ -829,4 +829,4 @@ function sendSigusr1(servicePath: string): void {
 }
 
 // Re-export verifyAnchors for tests.
-export { verifyAnchors, resolveAgents, buildAdoptRecord };
+export { verifyAnchors, resolveAgents, buildAdoptRecord, executeFullApply };
