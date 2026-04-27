@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../../config.js";
 import { resolveInstance } from "../instance-resolver.js";
@@ -164,7 +165,7 @@ async function executeFullApply(
 
   // Step 4: pre-apply hook.
   if (manifest.hooks?.preApply) {
-    runHook(manifest, manifest.hooks.preApply, "pre-apply", opts.yes ?? false);
+    await runHook(manifest, manifest.hooks.preApply, "pre-apply", opts.yes ?? false);
   }
 
   // Step 5: pre-resolve all agent selectors used downstream.
@@ -356,7 +357,7 @@ async function executeFullApply(
   // Step 8: post-apply hook.
   if (manifest.hooks?.postApply) {
     try {
-      runHook(manifest, manifest.hooks.postApply, "post-apply", opts.yes ?? false);
+      await runHook(manifest, manifest.hooks.postApply, "post-apply", opts.yes ?? false);
     } catch (err) {
       const unreversed = await reverseBestEffort(db, instance, manifest, {
         writtenSkills,
@@ -502,23 +503,27 @@ async function reverseBestEffort(
   return unreversed;
 }
 
-function runHook(
+async function runHook(
   manifest: FrameManifest,
   hookPath: string,
   label: "pre-apply" | "post-apply",
   yes: boolean,
-): void {
+): Promise<void> {
   const rootPath = manifest.rootPath;
   const hookAbs = resolve(rootPath, hookPath);
   if (!hookAbs.startsWith(resolve(rootPath) + sep)) {
     throw new Error(`hook path escapes frame root: ${hookPath}`);
   }
   console.log(`Frame "${manifest.name}" ${label} hook: /bin/sh ${hookAbs}`);
-  if (!yes) {
-    // Best-effort interactive confirm; in non-TTY contexts (CI) we still proceed.
-    if (process.stdin.isTTY) {
-      // Synchronous prompt is intentionally avoided — just announce and run.
-      // (--yes guard is the explicit suppression knob; --yes=false simply prints + runs.)
+  if (!yes && process.stdin.isTTY) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = (await rl.question("Run hook? [y/N] > ")).trim().toLowerCase();
+      if (answer !== "y" && answer !== "yes") {
+        throw new Error(`${label} hook declined by operator`);
+      }
+    } finally {
+      rl.close();
     }
   }
   execFileSync("/bin/sh", [hookAbs], { stdio: "inherit" });
