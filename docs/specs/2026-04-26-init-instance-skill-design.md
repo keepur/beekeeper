@@ -255,7 +255,7 @@ Step order and primitives:
 | Step | Mechanism | Durable artifact |
 |---|---|---|
 | 4a. Render Section 1 from frame | Frame primitive (Phase 2 of KPR-83) emits Section 1 + structural anchors into `db.memory[shared/constitution.md]` | `agent_memory` record for `shared/constitution.md` |
-| 4b. Insert Section 2 prose | Direct `admin_save_constitution` (Phase 1 frame primitives are read-only; Section 2 is operator-authored, not frame-managed) at the Section 2 anchor introduced by the frame in 4a | Same `agent_memory` doc, updated |
+| 4b. Insert Section 2 prose | Direct `admin_save_constitution` (Phase 1 frame primitives are read-only; Section 2 is operator-authored, not frame-managed) at the Section 2 anchor introduced by the frame in 4a. The anchor's stable name (e.g. `section-2`) is defined in the `hive-baseline` frame manifest (KPR-86 deliverable); plan-stage picks it up from there. | Same `agent_memory` doc, updated |
 | 4c. Apply `hive-baseline` frame | `frame apply hive-baseline <instance-id>` — the rest of the frame's assets (skills, schedules, prompt anchors, memory seeds, coreservers) | `applied_frames.hive-baseline` record |
 | 4d. Render initial CoS agent definition | `admin_save_agent` with the Phase 2 draft (soul + systemPrompt + universal-9 coreServers + role-specific extras from the frame's prompt clauses) | `agent_definitions.<cos-id>` record + `agent_definition_versions` row |
 | 4e. Seed CoS memory | `admin_save_memory` (or direct insert into `agent_memory` collection) with structured records from Phase 1 interview output — operator identity, team roster, comms norms, approval delegation values | `agent_memory` records tagged with `seedRunId: <runId>` |
@@ -311,6 +311,8 @@ Next steps:
   - Send a message to <cos-id> in Slack — she's pre-tuned with your operator context and ready to pick up the team-building you described.
   - When ready to spin up the agents you mentioned (X, Y, Z), ask <cos-id> in Slack — she'll use the frame's role→tool registry to provision them.
 ```
+
+**No run-artifact file in v1.** Unlike KPR-72's `tune-runs/<runId>.md`, init does not write a per-run findings doc. The audit trail is the `updatedBy: "beekeeper-init-instance:<runId>"` tags across the affected Mongo docs plus the Phase 5 handoff memory record (which carries `seedRunId` and the synthesized operator context). Conversation context is not durable — only the artifacts are. This is a deliberate scope choice: init has three macro writes (constitution, frame apply, CoS) versus tune-instance's dozens of remediations, and the tagged Mongo docs are sufficient to reconstruct what was seeded. If a future need arises (e.g. multi-operator review of historical inits), a `init-runs/<runId>.md` artifact can be added without breaking compatibility.
 
 ## Architecture diagram
 
