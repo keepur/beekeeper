@@ -228,13 +228,16 @@ git commit -m "feat(skill): init-instance operating principles, inputs, runId al
 
 ---
 
-## Task 4: `detectInstanceState()` shared primitive
+## Task 4: `detectInstanceState()` shared primitive + CLI wrapper
 
 **Files:**
 - Create: `src/lib/instance-state.ts`
 - Create: `src/lib/instance-state.test.ts`
+- Modify: `src/cli.ts` — add `init-state` subcommand routing
 
-**Why a TypeScript primitive, not skill-inline mongosh queries:** spec §"detectInstanceState() — shared primitive" explicitly mandates a single import path so Phase 0 (idempotency) and Phase 4 (mid-run resume detection) cannot disagree about what "initialized" means. The skill body invokes the primitive via the Beekeeper agent's `mcp__beekeeper__detect_instance_state` exposure (or equivalent — exact MCP surface is plan-stage; for v1 the simplest path is to expose a thin admin-MCP wrapper, OR have the skill ask the agent to run the function via `code` execution if Beekeeper exposes a `node` runner). For the TypeScript module itself, the contract is clear regardless of how it's invoked.
+**Why a TypeScript primitive, not skill-inline mongosh queries:** spec §"detectInstanceState() — shared primitive" explicitly mandates a single import path so Phase 0 (idempotency) and Phase 4 (mid-run resume detection) cannot disagree about what "initialized" means.
+
+**How the SKILL.md playbook invokes it:** the Beekeeper agent runs `beekeeper init-state <instance-id> --json` via Bash. The CLI subcommand wraps `detectInstanceState()` and prints a JSON object to stdout (`{"state":"fresh|partial|completed","detail":{...},"lastInitRunId":"...","lastInitAppliedAt":"..."}`) plus exits 0 on success. The skill parses the JSON to determine the branch. This matches the established beekeeper CLI pattern (`frame audit/apply/remove`, `pipeline tick`) — no new MCP servers, no cross-repo coordination, no `code` runner assumptions. Tested in isolation via the Vitest module tests; integration-tested via Task 15's e2e dry-run which spawns `beekeeper init-state` against fresh / partial / completed fixtures.
 
 - [ ] **Step 4.1:** Create `src/lib/instance-state.ts`:
 
@@ -377,6 +380,9 @@ async function checkCosSeeded(db: ReturnType<MongoClient["db"]>, cosAgentId: str
   if (cosDoc === null) return false;
   // Non-default heuristic: systemPrompt length > 200 chars (frame template alone is ~120) AND
   // includes at least one operator-context marker (operator name, team list, etc.).
+  // TODO(post-KPR-86): replace the magic 200 with a frame-manifest constant
+  // (e.g., `FRAME_TEMPLATE_BASELINE_LENGTH` exported from the hive-baseline manifest)
+  // so this check tracks frame-template growth automatically.
   const systemPrompt = (cosDoc as { systemPrompt?: string }).systemPrompt ?? "";
   return systemPrompt.length > 200;
 }
@@ -401,7 +407,34 @@ function extractLastInitMetadata(
 }
 ```
 
-- [ ] **Step 4.2:** Create `src/lib/instance-state.test.ts` with Vitest coverage. Use an in-memory or local-fixture Mongo (e.g., `mongodb-memory-server` if already a dev dep, otherwise spin a real `mongodb://localhost` test database `hive_init_state_test_<random>` and clean up after each test).
+- [ ] **Step 4.2:** Wire the CLI subcommand. Open `src/cli.ts` and add a route for `init-state` mirroring the existing `frame` and `pipeline` subcommand handlers. The handler:
+
+```typescript
+// In src/cli.ts argv-router:
+case "init-state": {
+  const instanceId = argv[1];
+  const json = argv.includes("--json");
+  if (!instanceId) {
+    console.error("usage: beekeeper init-state <instance-id> [--json]");
+    process.exit(2);
+  }
+  const { detectInstanceState } = await import("./lib/instance-state.js");
+  const result = await detectInstanceState(instanceId);
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`state: ${result.state}`);
+    for (const [k, v] of Object.entries(result.detail)) console.log(`  ${k}: ${v}`);
+    if (result.lastInitRunId) console.log(`lastInitRunId: ${result.lastInitRunId}`);
+    if (result.lastInitAppliedAt) console.log(`lastInitAppliedAt: ${result.lastInitAppliedAt.toISOString()}`);
+  }
+  process.exit(0);
+}
+```
+
+(The exact router shape depends on the current `src/cli.ts` argv-parsing convention — read the existing `frame` case before writing this; if it switches on `argv[0]`, mirror that shape exactly. The contract is: `beekeeper init-state <id> --json` emits the JSON shape returned by `detectInstanceState()` to stdout, exits 0; without `--json` emits human-readable lines.)
+
+- [ ] **Step 4.3:** Create `src/lib/instance-state.test.ts` with Vitest coverage. Use an in-memory or local-fixture Mongo (e.g., `mongodb-memory-server` if already a dev dep, otherwise spin a real `mongodb://localhost` test database `hive_init_state_test_<random>` and clean up after each test).
 
   Test cases (one `it()` each):
   - **fresh**: empty Mongo, no filesystem `shared/business-context.md` → returns `state: "fresh"`, all four detail booleans `false`.
@@ -413,20 +446,22 @@ function extractLastInitMetadata(
   - **lastInitRunId both absent**: returns `null`.
   - **CoS prompt below threshold**: agent_definitions has chief-of-staff but with frame-default prompt < 200 chars → `cosSeeded: false` (catches the "frame applied but operator interview not yet baked in" intermediate state).
 
-- [ ] **Step 4.3:** Verify
+- [ ] **Step 4.4:** Verify
 
 ```bash
 npm run typecheck
 npx vitest run src/lib/instance-state.test.ts
+# CLI smoke (will fail without a Mongo instance — that's fine, smoke is the help/usage path):
+node dist/cli.js init-state || echo "expected usage exit"
 ```
 
-Expected: typecheck clean; all instance-state tests green.
+Expected: typecheck clean; all instance-state tests green; CLI prints usage when no instance-id is provided.
 
-- [ ] **Step 4.4:** Commit
+- [ ] **Step 4.5:** Commit
 
 ```bash
-git add src/lib/instance-state.ts src/lib/instance-state.test.ts
-git commit -m "feat(init): detectInstanceState() shared primitive + tests"
+git add src/lib/instance-state.ts src/lib/instance-state.test.ts src/cli.ts
+git commit -m "feat(init): detectInstanceState() shared primitive + CLI wrapper + tests"
 ```
 
 ---
@@ -443,7 +478,7 @@ git commit -m "feat(init): detectInstanceState() shared primitive + tests"
      - `fresh` → proceed to Phase 1 normally.
      - `partial` → surface detected partial state to operator (which artifacts are present, which are missing, last `appliedAt` if known); ask "Resume from where init left off, or redo from scratch?". Resume → re-run Phase 1 only for not-yet-written pieces. Redo → remove existing partial artifacts (with operator confirmation per artifact, since destructive) and proceed to Phase 1 fresh.
      - `completed` → refuse with: `"instance <id> is already initialized (Section 2 written, frame applied, CoS seeded, last init at <appliedAt>). To update Section 2, hire new agents, or fix drift, use the tune-instance skill (KPR-72) or a future cos:hire-agent skill. To re-init from scratch anyway, confirm explicitly with 'force re-init <instance-id>'."` On explicit `force re-init` confirmation, behave as if state were `partial` with `redo from scratch` selected.
-  3. **`detectInstanceState()` contract subsection** — short prose pointing the agent at the TypeScript module + listing the four detail booleans + the decision rule (all-true → completed; all-false → fresh; mixed → partial). DO NOT inline the TypeScript signature here; the SKILL.md is operator-prose, not code-spec. Just say: "see `src/lib/instance-state.ts` for the canonical implementation; both Phase 0 and Phase 4 import it via the same path."
+  3. **`detectInstanceState()` contract subsection** — short prose pointing the agent at the CLI invocation: "Run `beekeeper init-state <instance-id> --json` via Bash; the command prints a JSON object `{state, detail, lastInitRunId, lastInitAppliedAt}` to stdout. Branch on the returned `state` field." Then list the four detail booleans + the decision rule (all-true → completed; all-false → fresh; mixed → partial). DO NOT inline the TypeScript signature here; the SKILL.md is operator-prose, not code-spec. Just say: "see `src/lib/instance-state.ts` for the canonical implementation. Both Phase 0 and Phase 4 invoke the same CLI subcommand so they cannot disagree about what 'initialized' means."
   4. **Optional Phase 0.5 dep check** (per spec §"Open design questions" item 1, lean: yes) — Mongo running, Qdrant up, Ollama present. Fail-fast with a clearer error than a Mongo connection failure mid-Phase-4. If any dep is down: "Operator, before we start the interview: <dep> isn't reachable. Check `bootstrap.sh` ran fully, then re-invoke."
 
 - [ ] **Step 5.2:** Verify
