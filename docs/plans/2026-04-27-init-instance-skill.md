@@ -407,10 +407,10 @@ function extractLastInitMetadata(
 }
 ```
 
-- [ ] **Step 4.2:** Wire the CLI subcommand. Open `src/cli.ts` and add a route for `init-state` mirroring the existing `pipeline` subcommand handler. The handler derives `servicePath` and `mongoUri` inline from `instanceId` using the documented convention (`~/services/hive/<id>/` + `mongodb://localhost/hive_<id>`) — these are NOT yet on the `BeekeeperConfig` type, and `resolveInstance()` is a KPR-85 deliverable that hasn't merged to main yet, so we derive directly:
+- [ ] **Step 4.2:** Wire the CLI subcommand. Open `src/cli.ts` and add a route for `init-state` mirroring the existing `pipeline-tick` subcommand handler. The handler derives `servicePath` and `mongoUri` inline from `instanceId` using the documented convention (`~/services/hive/<id>/` + `mongodb://localhost/hive_<id>`) — these are NOT yet on the `BeekeeperConfig` type, and `resolveInstance()` is a KPR-85 deliverable that hasn't merged to main yet, so we derive directly:
 
 ```typescript
-// In src/cli.ts argv-router (mirror the existing pipeline case):
+// In src/cli.ts argv-router (mirror the existing pipeline-tick case):
 case "init-state": {
   const instanceId = argv[1];
   const json = argv.includes("--json");
@@ -439,7 +439,7 @@ case "init-state": {
 }
 ```
 
-(The exact router shape depends on the current `src/cli.ts` argv-parsing convention — read the existing `pipeline` case before writing this; if it switches on `argv[0]`, mirror that shape exactly. The contract is: `beekeeper init-state <id> --json` emits the JSON shape returned by `detectInstanceState()` to stdout, exits 0; without `--json` emits human-readable lines. **Forward-compat note:** once KPR-83 epic merges to main and `resolveInstance()` becomes available, the inline derivation can be replaced with a call to it for consistency with `frames/cli.ts` — but the inline path stays correct regardless, since it implements the same convention.)
+(The exact router shape depends on the current `src/cli.ts` argv-parsing convention — read the existing `pipeline-tick` case before writing this; if it switches on `argv[0]`, mirror that shape exactly. The contract is: `beekeeper init-state <id> --json` emits the JSON shape returned by `detectInstanceState()` to stdout, exits 0; without `--json` emits human-readable lines. **Forward-compat note:** once KPR-83 epic merges to main and `resolveInstance()` becomes available, the inline derivation can be replaced with a call to it for consistency with `frames/cli.ts` — but the inline path stays correct regardless, since it implements the same convention.)
 
 - [ ] **Step 4.3:** Create `src/lib/instance-state.test.ts` with Vitest coverage. Use an in-memory or local-fixture Mongo (e.g., `mongodb-memory-server` if already a dev dep, otherwise spin a real `mongodb://localhost` test database `hive_init_state_test_<random>` and clean up after each test).
 
