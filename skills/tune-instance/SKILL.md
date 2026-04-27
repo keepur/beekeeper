@@ -278,7 +278,101 @@ This differs from Phase 2's parsing-failure rule, which abandons all of Phase 3 
 
 ## Phase 4 — Save findings
 
-[FILLED IN BY TASK 7]
+Write a session summary to `~/services/hive/<instance-id>/tune-runs/<runId>.md`:
+
+- `<runId>` is the same ULID allocated at Phase 1 entry (see "runId allocation" above); the file path is the durable handle across phases, audit logs, and operator-facing prose.
+- **Top half — markdown**: the Phase 1 report verbatim, the operator's selections (applied / deferred / skipped per finding), the Phase 3 results (writes that succeeded vs. failed vs. blocked-by-frame), any operator notes the skill captured during the conversation, and a "mongosh writes" subsection for any audit-trail-rule entries from Phase 3. This is operator-readable plain markdown.
+- **Bottom half — JSON block** (fenced ```json): a machine-parseable selections record carrying each finding's stable signature, category prefix (`C/B/P/T/M/K/S/N/F`), disposition (`applied` / `deferred` / `skipped` / `blocked-by-frame` / `failed`), and (for deferred items) the reason. The next run reads this block to know which prior findings to re-surface.
+
+A separate aggregated file `~/services/hive/<instance-id>/tune-runs/_index.md` lists all runs in reverse-chronological order with one-line summaries (date, runId, applied-count / deferred-count). Updated atomically per run (read-modify-write within a single Phase 4 step).
+
+### Deferred-finding signature contract
+
+Each finding carries a **stable signature** in the JSON block:
+
+```
+signature = sha256({step, target, proposed-action})  // truncated to 12 hex chars
+```
+
+Signature inputs are **normalized** to survive legitimate operator activity that renames or relocates targets between runs:
+
+- **`step`** — the audit-step identifier (e.g., `"step-3a-prompt-dry"`, `"step-5-memory-hot-tier"`). Stable across runs by construction.
+- **`target`** — a normalized identity, NOT a human-display string:
+  - For agents: `agentId` (the slug, not the display name) — survives `name` renames.
+  - For constitution sections: a content-derived anchor id `sha256(section-heading-text)[:8]`, NOT the section number — survives reordering when other sections are inserted/removed.
+  - For memory records: the Mongo `_id` — survives prose changes to the record.
+  - For schedules / crons: the `taskId` field (or task name if the schema lacks a stable id).
+  - For skills/seeds: the skill name (filesystem identifier), not the description.
+- **`proposed-action`** — a normalized verb + minimal payload, NOT the full prose. E.g., `{verb: "demote", recordIds: [...], toTier: "cold"}` not `"demote 3 stale standup snapshots from hot to cold tier"`. The verb stays canonical; tier-specific detail lives in the payload, keeping the verb space small and stable.
+
+**Verb vocabulary** (full list, organized by audit step):
+
+- Steps 1, 2 (constitution / business-context): `drop`, `backfill`, `rewrite`, `reword`, `dedupe`
+- Step 3 (per-agent prompts): `rewrite`, `reword`, `add-tool`, `remove-tool`
+- Step 4 (universal-9 coreServers): `add-tool`, `remove-tool`
+- Step 5 (memory hygiene): `demote`, `promote`, `archive`, `dedupe`, `drop`
+- Step 6, 8 (cron wiring / vestigial cron): `fix-cron`, `remove-cron`
+- Step 7 (skill availability): `install-skill`, `remove-skill`
+- Step 9 (naming/identity): `rename` with payload `{kind: "agent-dir" | "slack-channel" | "email-address", from, to}`
+- Step 10 (frame integrity, post-KPR-83): `reapply-frame`, `remove-frame`
+
+**Manual-verb fallback**: findings that can't be expressed with the listed verbs flag as `verb: "manual"` and write a prose-only proposal — these don't get stable signatures and can't carry forward as deferred (operator must re-evaluate next run). Plan-stage decides whether to add new verbs or accept manual-only handling.
+
+**Next-run lookup behavior**: after the next run's Phase 1 audit completes, the prior run's deferred signatures are looked up against the new audit's findings. Signatures still detectable re-surface under their NEW finding-ID (old IDs aren't preserved across runs, but the prior-run prose is quoted for continuity). Signatures NOT re-detected are dropped from the deferred carry-forward — drift was either resolved by the operator manually or went away on its own.
+
+**Identity-rotation note**: if a target's normalized identity legitimately changes (e.g., agentId rotation as part of an agent re-creation), the prior signature won't re-match — that's correct behavior; the prior decision was about the prior agent and may not apply to the new one.
+
+### Phase 4 write-failure recovery
+
+If the findings doc write or `_index.md` update fails (disk full, permission error, atomic-write rename collision):
+
+- The skill emits the full findings doc content (markdown body + JSON block) into the operator's chat session with an explicit `"Phase 4 write failed — please save this output manually to <path>"` instruction.
+- AND posts a Linear comment on a tracking issue (configurable; defaults to a per-instance "tune-instance log" issue if one exists, or to the Phase 3 changes' affected tickets) carrying the runId + summary.
+
+External traceability survives even when filesystem persistence didn't.
+
+### Filesystem vs Mongo persistence
+
+v1 chose filesystem (`~/services/hive/<instance-id>/tune-runs/`) because:
+
+- (a) operator-readable as plain markdown without DB tooling,
+- (b) survives instance DB resets without data migration,
+- (c) co-located with other per-instance operator artifacts.
+
+A `tune_runs` Mongo collection would make cross-run signature lookups trivial but adds a schema and a versioning question. Revisit if operators ask for "show me all deferred findings across the last 6 runs" queries — filesystem grep is fine for v1.
+
+### Example JSON block
+
+Example JSON block at the bottom of `<runId>.md`:
+
+```json
+{
+  "runId": "01HW...",
+  "instanceId": "dodi",
+  "timestamp": "2026-04-26T14:22:11Z",
+  "findings": [
+    {
+      "id": "C1",
+      "category": "constitution",
+      "step": "step-1-constitution-drift",
+      "target": "section-anchor-3a4f9e1c",
+      "proposedAction": { "verb": "drop", "payload": {} },
+      "signature": "8b3c2f4d1a9e",
+      "disposition": "applied"
+    },
+    {
+      "id": "P1",
+      "category": "per-agent-prompt",
+      "step": "step-3a-prompt-dry",
+      "target": "hermi",
+      "proposedAction": { "verb": "rewrite", "payload": { "scope": "role-spec" } },
+      "signature": "4e7a1b9c8f2d",
+      "disposition": "deferred",
+      "reason": "operator deferred"
+    }
+  ]
+}
+```
 
 ## Anti-patterns to refuse
 
