@@ -82,3 +82,4 @@ If Phase 4's filesystem write fails (disk full, permissions, missing tune-runs d
 ## Cadence
 
 Operator-driven for v1 — the `schedule: every 2 weeks` frontmatter is informational. Run when drift suspicion is high (after a constitution edit, after onboarding a new agent, after a frame change). A follow-up ticket can wire actual cron via Beekeeper's scheduled-task infrastructure if drift detection becomes time-sensitive.
+
