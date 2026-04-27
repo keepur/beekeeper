@@ -493,7 +493,12 @@ Expected: drift dialog opens for the `capabilities` resource. The dialog present
   - On confirm, the merged text replaces both the local drift and the frame's text.
   - On reject, the merge is abandoned and the dialog re-prompts with the original options.
 
-- [ ] **Step 9.7:** Run audit one more time:
+- [ ] **Step 9.7:** Walk the **(d) defer** path. Re-inject drift a fourth time. Run apply; respond `defer` (or `d`). Verify:
+  - The injected drift remains in the constitution (no write).
+  - `applied_frames.driftAccepted` is **NOT** mutated (defer is the null-action path; no decision is recorded so the next audit/apply re-prompts).
+  - Re-run audit: the drift finding is still surfaced.
+
+- [ ] **Step 9.8:** Run audit one more time:
 
 ```bash
 node dist/frames/cli.js audit hive-baseline dodi
@@ -574,7 +579,7 @@ Expected:
 
 - [ ] **Step 11.2:** For each follow-up ticket, file via Linear with `pipeline-auto` label and parent-link to KPR-83 (the epic). Spec § "Path to implementation" item 11 covers this.
 
-- [ ] **Step 11.3:** For inline fixes (small doc / comment / error-message updates), apply them in the worktree on the `KPR-86-hive-baseline-spec-plan` branch — but NOTE: this plan delivers spec + plan only. Inline runtime fixes belong in a follow-up implementation PR against the `KPR-83-frames` epic branch. The implementer running THIS plan files the followups; the implementer of the next phase picks them up.
+- [ ] **Step 11.3:** Routing rule for fixes — **spec/plan doc updates roll into THIS PR** (the `KPR-86-hive-baseline-spec-plan` branch); **runtime code changes go to a separate follow-up PR on `KPR-83-frames`**. The implementer running this plan files the runtime followups; the implementer of the next phase picks them up. Doc-only inline fixes (small doc / comment / error-message text in the spec or plan) apply in this worktree and ship as part of Step 11.5's commit.
 
 - [ ] **Step 11.4:** Append a "Refinement findings" section to the spec at `docs/specs/2026-04-27-hive-baseline-frame-design.md` summarizing what was found and where it landed (ticket links, inline-fix commits). Keep it tight (~10–20 lines).
 
