@@ -93,20 +93,54 @@ export interface AppliedFrameRecord {
   driftAccepted?: DriftDecision[];
 }
 
+export interface AppliedSkillRecord {
+  bundle: string;
+  sha256: string;
+  replacedClaimFrom: string | null;
+}
+export interface AppliedScheduleRecord {
+  task: string;
+  cron: string;
+  pattern: "explicit" | "shared" | "stagger";
+  windowSlot: number | null;
+  replacedClaimFrom: string | null;
+}
+export interface AppliedSeedRecord {
+  id: string;
+  contentHash: string;
+  tier: "hot" | "warm" | "cold";
+  agent: string;
+  replacedClaimFrom: string | null;
+}
+
 export interface AppliedResources {
-  constitution?: {
-    anchors: string[];
-    snapshotBefore: string;
-    insertedText: Record<string, string>;
-  };
-  skills?: Array<{ bundle: string; sha256: string }>;
+  constitution?: { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> };
+  skills?: AppliedSkillRecord[];
   coreservers?: Record<string, string[]>;
-  schedule?: Record<string, Array<{ task: string; cron: string }>>;
-  memorySeeds?: Array<{ id: string; contentHash: string }>;
-  prompts?: Record<
-    string,
-    { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> }
-  >;
+  schedule?: Record<string, AppliedScheduleRecord[]>;
+  memorySeeds?: AppliedSeedRecord[];
+  prompts?: Record<string, { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> }>;
+}
+
+export type DriftKind =
+  | "constitution-text-changed"
+  | "constitution-anchor-missing"
+  | "skill-modified-locally"
+  | "skill-missing"
+  | "coreserver-missing"
+  | "schedule-missing"
+  | "prompt-text-changed"
+  | "prompt-anchor-missing"
+  | "seed-missing"
+  | "overridden-claim";
+
+export interface DriftFinding {
+  frame: string;
+  kind: DriftKind;
+  resource: string;
+  detail: string;
+  /** Informational findings (overridden-claim) are surfaced but don't fail audit. */
+  informational: boolean;
 }
 
 export interface DriftDecision {
@@ -115,4 +149,6 @@ export interface DriftDecision {
   decidedAt: Date;
   decidedBy: string;
   reason?: string;
+  /** Frame version this decision was made against. Audit re-surfaces the finding when the applied version moves past this. */
+  againstVersion?: string;
 }

@@ -1,5 +1,5 @@
 import type { Db, Collection } from "mongodb";
-import type { AppliedFrameRecord } from "./types.js";
+import type { AppliedFrameRecord, DriftDecision } from "./types.js";
 
 const COLLECTION = "applied_frames";
 
@@ -22,6 +22,13 @@ export class AppliedFramesStore {
     await this.coll.replaceOne({ _id: record._id }, record, { upsert: true });
   }
 
+  async appendDriftDecision(frameName: string, decision: DriftDecision): Promise<void> {
+    await this.coll.updateOne(
+      { _id: frameName },
+      { $push: { driftAccepted: decision } },
+    );
+  }
+
   async remove(name: string): Promise<boolean> {
     const r = await this.coll.deleteOne({ _id: name });
     return r.deletedCount === 1;
@@ -33,5 +40,21 @@ export class AppliedFramesStore {
       .find({ "manifest.requires": name }, { projection: { _id: 1 } })
       .toArray();
     return docs.map((d) => d._id);
+  }
+
+  async findClaimsForSkill(bundle: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll.find({ "resources.skills.bundle": bundle }).toArray();
+  }
+
+  async findClaimsForSchedule(agentId: string, task: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll
+      .find({ [`resources.schedule.${agentId}.task`]: task })
+      .toArray();
+  }
+
+  async findClaimsForSeedAgent(agentId: string): Promise<AppliedFrameRecord[]> {
+    return await this.coll
+      .find({ "resources.memorySeeds.agent": agentId })
+      .toArray();
   }
 }
