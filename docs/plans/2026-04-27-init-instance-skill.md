@@ -407,7 +407,7 @@ function extractLastInitMetadata(
 }
 ```
 
-- [ ] **Step 4.2:** Wire the CLI subcommand. Open `src/cli.ts` and add a route for `init-state` mirroring the existing `frame` and `pipeline` subcommand handlers. The handler:
+- [ ] **Step 4.2:** Wire the CLI subcommand. Open `src/cli.ts` and add a route for `init-state` mirroring the existing `frame` and `pipeline` subcommand handlers. The handler resolves `servicePath` and `mongoUri` from `instanceId` via the existing `loadConfig` + `resolveInstance` helpers (same pattern as `src/frames/cli.ts`):
 
 ```typescript
 // In src/cli.ts argv-router:
@@ -418,8 +418,17 @@ case "init-state": {
     console.error("usage: beekeeper init-state <instance-id> [--json]");
     process.exit(2);
   }
+  const { loadConfig } = await import("./config.js");
+  const { resolveInstance } = await import("./frames/instance-resolver.js");
   const { detectInstanceState } = await import("./lib/instance-state.js");
-  const result = await detectInstanceState(instanceId);
+  const config = loadConfig();
+  const instance = resolveInstance(config, instanceId);
+  const result = await detectInstanceState({
+    instanceId,
+    servicePath: instance.servicePath,           // ~/services/hive/<id>/
+    mongoUri: instance.mongoUri,                  // mongodb://localhost/hive_<id>
+    // cosAgentId omitted — defaults to "chief-of-staff"; Phase 0 can override
+  });
   if (json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
@@ -432,7 +441,7 @@ case "init-state": {
 }
 ```
 
-(The exact router shape depends on the current `src/cli.ts` argv-parsing convention — read the existing `frame` case before writing this; if it switches on `argv[0]`, mirror that shape exactly. The contract is: `beekeeper init-state <id> --json` emits the JSON shape returned by `detectInstanceState()` to stdout, exits 0; without `--json` emits human-readable lines.)
+(The exact router shape depends on the current `src/cli.ts` argv-parsing convention — read the existing `frame` case before writing this; if it switches on `argv[0]`, mirror that shape exactly. **Pre-flight verify** that `resolveInstance()` returns a `ResolvedInstance` with both `servicePath` and `mongoUri` fields — the frames module exports it; if either field is named differently, adjust the property names accordingly. The contract is: `beekeeper init-state <id> --json` emits the JSON shape returned by `detectInstanceState()` to stdout, exits 0; without `--json` emits human-readable lines.)
 
 - [ ] **Step 4.3:** Create `src/lib/instance-state.test.ts` with Vitest coverage. Use an in-memory or local-fixture Mongo (e.g., `mongodb-memory-server` if already a dev dep, otherwise spin a real `mongodb://localhost` test database `hive_init_state_test_<random>` and clean up after each test).
 
@@ -655,7 +664,7 @@ This is the second-largest content task — the apply step ordering + frame prim
      - SIGUSR1 the running hive: `kill -USR1 $(pgrep -f "hive-agent <instance-id>")` — agent definitions reload without a full restart. (For a truly fresh instance, the hive process may not be running yet; in that case Phase 4 ends and Phase 5 reminds the operator to start the hive service.)
      - Verify: re-query each affected doc to confirm the writes landed; report any failures to the operator.
 
-  5. **Failure mid-Phase-4** — port spec line 270 verbatim: each step durably committed before the next runs. If 4d fails (e.g., admin tool errors), operator told which steps succeeded (4a, 4b, 4c) and which failed (4d) and what's still missing (4e, 4f). On re-invocation, `detectInstanceState()` returns `partial` with detail showing 4a-4c done, 4d-4f missing, and Phase 0 routes to resume.
+  5. **Failure mid-Phase-4** — port spec line 270 verbatim: each step durably committed before the next runs. If 4d fails (e.g., admin tool errors), operator told which steps succeeded (4a, 4b, 4c) and which failed (4d) and what's still missing (4e, 4f). On re-invocation, `beekeeper init-state <id> --json` returns `partial` with detail showing 4a-4c done, 4d-4f missing, and Phase 0 routes to resume.
 
 - [ ] **Step 9.2:** Verify
 
