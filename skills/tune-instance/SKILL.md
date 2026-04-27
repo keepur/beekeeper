@@ -173,7 +173,63 @@ For a frame-naive instance (no `applied.json`, no anchored sections, no `replace
 
 ## Phase 2 — Operator review
 
-[FILLED IN BY TASK 5]
+After the audit, the skill emits a single consolidated report to the operator (no drip — full picture in one message). Format follows the playbook draft's structured-text shape, with each finding numbered for cherry-pick reference. Per-category prefixes:
+
+- `C` = constitution drift
+- `B` = business-context separation
+- `P` = per-agent prompts
+- `T` = coreServers baseline (tool matrix)
+- `M` = memory hygiene
+- `K` = cron→skill wiring
+- `S` = skill availability
+- `N` = naming-identity
+- `F` = frame integrity
+
+Example report shape:
+
+```
+TUNE-INSTANCE REPORT: <instance-id>  |  <run-id>  |  <date>
+
+CONSTITUTION DRIFT (5 findings)
+  C1. §1.7–1.10 restate Risk Levels table — propose: drop sections
+  C2. §2.4 duplicates business-context "Tools & Systems" — propose: drop §2.4
+  C3. Missing "Message Delivery" template section — propose: backfill
+  ...
+
+PER-AGENT PROMPTS (4 findings)
+  P1. Hermi: generic prompt, no Keepur context — propose: rewrite role per template
+  P2. Alexandria: prompt claims GitHub/Linear, lacks both MCPs — propose: ADD tools OR TRIM role (operator decides which)
+  ...
+
+MEMORY HYGIENE (12 findings)
+  M1. Wyatt hot tier: 0 records — propose: pre-seed durable knowledge
+  M2. Sam hot tier: 8 stale standup snapshots — propose: demote to cold
+  ...
+
+[plus business-context (B), coreServers baseline (T), cron→skill (K), skill availability (S), naming/identity (N)]
+
+FRAME INTEGRITY (0 findings)  [or N if frames applied]
+
+DEFERRED FROM PREVIOUS RUN (3 findings)
+  C2 (deferred 2026-04-12 — operator declined; recheck if still applicable)
+  ...
+```
+
+The operator responds conversationally: `"apply C1, C3, P2-trim-role, M1-M3; defer P1; skip C2"` (or similar). The skill parses the response, confirms the parsed selection (`"applying 6 findings: C1, C3, P2 (trim role), M1, M2, M3. Deferring P1. Skipping C2. Confirm?"`), then proceeds to Phase 3 on confirm.
+
+The "DEFERRED FROM PREVIOUS RUN" section is re-surfaced from the prior run's findings doc (see Phase 4) — signatures still detectable in this audit re-appear under their new finding-ID with the prior-run prose quoted for continuity.
+
+### Parsing-failure contract
+
+If the skill cannot confidently parse a response (e.g., `"apply all the constitution ones"` is ambiguous when frame-managed C-findings are present, or `"C1 through C3"` could be a closed or open interval depending on operator intent), it asks **exactly one targeted clarifying question** rather than guessing or applying a partial selection. Two consecutive ambiguous responses in the same review → the skill abandons Phase 3, writes a `"no apply, parsing failed"` findings doc (Phase 4 still runs), and exits. The operator can re-invoke `tune-instance` with a fresh response.
+
+### Apply-all scope
+
+If the operator wants to apply *all* findings, they say so (`"apply all"`) and the skill skips per-finding parsing. `"apply all"` covers all *proposed* findings as listed in the report (already filtered to exclude frame-managed config). Frame-bypass findings (which require explicit override per **Frame-awareness**) and Section 1 invariant findings that are NOT template-drift backfills (which require explicit override per **Phase 3**) are NOT covered by `"apply all"` and still require the per-finding override prompt — even if the operator said "apply all," those findings get a follow-up "you're about to override <invariant>; confirm?" gate. Section 1 template-drift backfills ARE covered by apply-all (the Phase 3 invariant guard auto-allows backfills, no override prompt needed).
+
+### Deferred vs. skipped distinction
+
+Deferred findings persist in the run's findings doc with reason ("operator deferred") and re-surface in the next run's "DEFERRED FROM PREVIOUS RUN" section. Skipped findings do NOT roll forward — the operator chose to dismiss them; if the drift recurs, it'll be detected fresh on a future audit.
 
 ## Phase 3 — Apply with consent
 
