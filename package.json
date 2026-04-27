@@ -9,6 +9,7 @@
   },
   "files": [
     "dist/",
+    "skills/",
     "beekeeper.yaml.example",
     "LICENSE",
     "README.md"
