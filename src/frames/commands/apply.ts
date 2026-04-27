@@ -96,7 +96,7 @@ async function runAdopt(
     );
     return 0;
   }
-  await verifyAnchors(db, manifest);
+  await verifyAnchors(db, manifest, (sel) => resolveAgents(db, sel));
   const record = await buildAdoptRecord(db, manifest);
   await store.upsert(record);
   console.log(`Adopted frame "${manifest.name}" v${manifest.version} on "${instance.id}".`);
@@ -650,6 +650,111 @@ async function verifyAnchors(
 async function buildAdoptRecord(db: Db, manifest: FrameManifest): Promise<AppliedFrameRecord> {
   const resources: AppliedResources = {};
 
+  // Skills: hash each bundle currently on disk.
+  const skillRecords: AppliedSkillRecord[] = [];
+  for (const s of manifest.skills ?? []) {
+    const bundleDir = join(manifest.rootPath, s.bundle);
+    if (!existsSync(bundleDir)) {
+      throw new MissingAnchorError(
+        manifest.name,
+        "skills",
+        s.bundle,
+        `${bundleDir} (not found)`,
+      );
+    }
+    const sha = computeBundleHash(bundleDir);
+    skillRecords.push({ bundle: s.bundle, sha256: sha, replacedClaimFrom: null });
+  }
+  if (skillRecords.length > 0) resources.skills = skillRecords;
+
+  // Memory seeds: only record those whose content-hash already lives in agent_memory.
+  const seedRecords: AppliedSeedRecord[] = [];
+  for (const seed of manifest.memorySeeds ?? []) {
+    const filePath = join(manifest.rootPath, seed.file);
+    const content = readFileSync(filePath, "utf-8");
+    const contentHash = sha256Text(content);
+    const existing = await db
+      .collection<{ _id: string; agentId: string; contentHash: string }>("agent_memory")
+      .findOne({ agentId: seed.agent, contentHash });
+    if (existing) {
+      seedRecords.push({
+        id: existing._id,
+        contentHash,
+        tier: seed.tier,
+        agent: seed.agent,
+        replacedClaimFrom: null,
+      });
+    }
+  }
+  if (seedRecords.length > 0) resources.memorySeeds = seedRecords;
+
+  // Core servers: intersection of asset.add with agent's existing coreServers.
+  const coreserversRec: Record<string, string[]> = {};
+  for (const cs of manifest.coreservers ?? []) {
+    const resolvedAgents = await resolveAgents(db, cs.agents);
+    const coll = db.collection<AgentDefDoc>("agent_definitions");
+    for (const agentId of resolvedAgents) {
+      const doc = await coll.findOne({ _id: agentId });
+      const have = new Set(doc?.coreServers ?? []);
+      const intersect = cs.add.filter((s) => have.has(s));
+      if (intersect.length === 0) continue;
+      const cur = coreserversRec[agentId] ?? [];
+      coreserversRec[agentId] = [...cur, ...intersect];
+    }
+  }
+  if (Object.keys(coreserversRec).length > 0) resources.coreservers = coreserversRec;
+
+  // Schedule: lookup each (agent, task) — record only if currently scheduled.
+  const scheduleRec: Record<string, AppliedScheduleRecord[]> = {};
+  for (const sched of manifest.schedule ?? []) {
+    const resolvedAgents = await resolveAgents(db, sched.agents);
+    const slots = resolveScheduleSlots(sched, resolvedAgents);
+    const coll = db.collection<AgentDefDoc>("agent_definitions");
+    for (const slot of slots) {
+      const doc = await coll.findOne({ _id: slot.agentId });
+      const entry = (doc?.schedule ?? []).find((e) => e.task === sched.task);
+      if (!entry) continue;
+      const cur = scheduleRec[slot.agentId] ?? [];
+      scheduleRec[slot.agentId] = [
+        ...cur,
+        {
+          task: sched.task,
+          cron: entry.cron,
+          pattern: slot.pattern,
+          windowSlot: slot.windowSlot,
+          replacedClaimFrom: null,
+        },
+      ];
+    }
+  }
+  if (Object.keys(scheduleRec).length > 0) resources.schedule = scheduleRec;
+
+  // Prompts: per-agent neighborhood snapshot.
+  const promptRec: Record<
+    string,
+    { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> }
+  > = {};
+  for (const p of manifest.prompts ?? []) {
+    const resolvedAgents = await resolveAgents(db, p.agents);
+    const coll = db.collection<AgentDefDoc>("agent_definitions");
+    for (const agentId of resolvedAgents) {
+      const doc = await coll.findOne({ _id: agentId });
+      const currentPrompt = doc?.systemPrompt ?? "";
+      const neighborhood = extractAnchorNeighborhood(currentPrompt, p.anchor);
+      const cur = promptRec[agentId] ?? {
+        anchors: [],
+        snapshotBefore: currentPrompt,
+        insertedText: {},
+      };
+      if (cur.anchors.length === 0) cur.snapshotBefore = currentPrompt;
+      cur.anchors.push(p.anchor);
+      cur.insertedText[p.anchor] = neighborhood;
+      promptRec[agentId] = cur;
+    }
+  }
+  if (Object.keys(promptRec).length > 0) resources.prompts = promptRec;
+
+  // Constitution: full document snapshot + per-anchor neighborhood.
   const constitutionAnchors = (manifest.constitution ?? []).map((c) => c.anchor);
   if (constitutionAnchors.length > 0) {
     const doc = await db
@@ -667,8 +772,7 @@ async function buildAdoptRecord(db: Db, manifest: FrameManifest): Promise<Applie
     };
   }
 
-  // Other asset types under adopt: not populated in this plan. Subsequent plans
-  // extend the adopt path to snapshot coreservers/schedule/prompts/seeds/skills.
+  // Phase 2: all six asset types fully populated under --adopt.
 
   return {
     _id: manifest.name,
@@ -725,4 +829,4 @@ function sendSigusr1(servicePath: string): void {
 }
 
 // Re-export verifyAnchors for tests.
-export { verifyAnchors, resolveAgents };
+export { verifyAnchors, resolveAgents, buildAdoptRecord };
