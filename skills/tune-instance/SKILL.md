@@ -233,7 +233,48 @@ Deferred findings persist in the run's findings doc with reason ("operator defer
 
 ## Phase 3 — Apply with consent
 
-[FILLED IN BY TASK 6]
+For each operator-approved finding, the skill executes the appropriate write through the existing tooling:
+
+| Finding type | Mechanism |
+|---|---|
+| Constitution edit | `admin_save_constitution` MCP tool (already exists; routes through `memory_versions`) |
+| Business-context edit | Direct file edit in `<instance>/skills/business-context/` (or via `admin_save_memory` if applicable) |
+| Agent prompt edit | `admin_save_agent` MCP tool (already exists; routes through `agent_definition_versions`) |
+| `coreServers` change | `admin_save_agent` (same) |
+| Memory tier mutation | `mongosh db.agent_memory.updateMany(...)` — no MCP tool exists for tier moves at agent-external scope |
+| Skill creation/recovery | Write to `<instance>/skills/<bundle>/<skill>/SKILL.md` |
+| `scheduledTasks` removal | `admin_save_agent` with updated `scheduledTasks` array |
+
+Every Phase 3 write tags `updatedBy: "beekeeper-tune-instance:<runId>"` (the ULID allocated at Phase 1 entry).
+
+### mongosh-writes audit-trail rule
+
+Mongo writes that don't carry a structured `updatedBy` field (e.g., `db.agent_memory.updateMany(...)` invocations done outside the admin MCP path) get **dual-channel traceability**:
+
+1. The skill posts a Linear comment carrying `<runId>` + a one-line summary of the write.
+2. The skill records the write under a "mongosh writes" subsection of the Phase 4 findings doc.
+
+This way, even when the on-document `updatedBy` is missing, both the external tracker and the local findings doc carry the runId.
+
+### Post-mutation steps
+
+After all approved mutations:
+
+- **SIGUSR1 the running hive**: `kill -USR1 $(pgrep -f "hive-agent <instance-id>")` — agent definitions reload without a full restart.
+- **Verify**: re-query the affected fields to confirm the writes landed.
+
+### Section 1 platform-only invariant guard
+
+The skill REFUSES to apply any constitution edit that touches Section 1 (Authority, Hard Limits, etc.) UNLESS the edit is a **template-drift backfill** (a section present in the current `constitution-bootstrap.md.tpl` but missing from the rendered constitution) OR the operator explicitly overrides.
+
+The override phrase is parsed conversationally — variants like `"yes, override Section 1 invariant"`, `"override §1 for C5"`, `"yes, even Section 1"` all work; what matters is unambiguous operator intent.
+
+**Finding-scoped abandonment** (NOT phase-scoped — this differs from Phase 2's parsing-failure rule):
+
+- Ambiguous override response → exactly one targeted clarifying question.
+- Two consecutive ambiguous responses on the SAME Section 1 override prompt → mark THAT finding alone as `"deferred — Section 1 override unclear"` and continue with the remaining approved findings in Phase 3. The abandonment is recorded in the findings doc.
+
+This differs from Phase 2's parsing-failure rule, which abandons all of Phase 3 because Phase 2's ambiguity is about which findings to apply at all. Phase 3's Section 1 ambiguity is about a single high-risk finding — the rest of the approved batch can still proceed safely.
 
 ## Phase 4 — Save findings
 
