@@ -48,6 +48,7 @@ Walk the checklist below. Take notes in a structured findings doc. Output one co
 - **Flag**: bloat from hard-coded contact info, vestigial sections, redundant guardrails the universal constitution already covers.
 - **Reframe check**: tone is "agents want to perform well; guidelines protect the company/team; leave space for agentic behavior" — not "agents are dangerous and must be constrained."
 - **Section sanity**: §1 Authority, §2 Working Environment, §3 Acting Carefully, §4 Communications, §5 Hard Limits, §6 Working With Each Other, §7 Self-Governance, §8 Incidents, §9 Group Conversations, §10 Memory. (Numbering may vary.)
+- **Frame-awareness**: Sections enclosed by `<!-- frame:<id>:start -->...<!-- frame:<id>:end -->` anchors are tagged frame-managed and excluded from "remove redundant" findings.
 
 ### 2. Business context separation
 
@@ -67,6 +68,7 @@ For each agent in `db.agent_definitions.find({})`:
 - **Approval delegation language**: "approval comes from the requester within their authority" — not "always wait for May"
 - **Cron task pointers**: each scheduled task in the prompt should resolve to an actual skill — don't describe the task verbatim, point at the skill
 - **Sonnet ceiling check**: model ceiling matches actual work complexity (Opus only for true synthesis roles; Haiku for routing/simple)
+- **Frame-awareness**: Records with `replacedClaimFrom: <frame-id>` are skipped — the frame is the authoritative claim, not drift.
 
 ### 4. Universal-9 coreServers baseline
 
@@ -115,6 +117,7 @@ For each scheduled task in `db.agent_definitions.find({})`'s `scheduledTasks` fi
 - **Lookup**: does a skill with the matching name exist in `<instance>/skills/` or as a plugin/seed skill?
 - **If yes**: skill content is loaded when the cron fires. Verify the skill content matches the task name semantically.
 - **If no**: the agent improvises output every time the cron fires — inconsistent, wasteful. Either author the skill or remove the cron.
+- **Frame-awareness**: Same `replacedClaimFrom` skip applies to scheduled-task entries.
 
 Common gaps:
 - `morning-briefing-standup-prep` (Jessica) — vestigial; Mokie now orchestrates via DMs
@@ -145,9 +148,28 @@ After step 6, any cron whose:
 - **Slack channels**: `#agent-<name>` consistently
 - **Email addresses**: `<firstname>@<domain>` for human-fronted agents; agents without their own mailbox should NOT have email-send tooling (Rae example)
 
+### 10. Frame integrity (post-KPR-83)
+
+Flag inconsistencies between what `~/services/hive/<instance-id>/frames/applied.json` says is applied and what's actually present in the instance — for example, a frame claims to provide a `daily-purchasing-scan` cron but the cron is missing from the agent's `scheduledTasks`, or a frame claims an anchored constitution section that isn't in the rendered constitution. Resolution path is to **re-apply or remove the frame**, not to hand-edit the affected config.
+
+Frame-naive instances (no `applied.json`, no anchored sections, no `replacedClaimFrom` fields) skip this step entirely.
+
 ## Frame-awareness
 
-[FILLED IN BY TASK 4]
+When KPR-83 ships, frames apply config overlays via three primitives:
+
+- **Anchored sections** in `shared/constitution.md` (e.g., `<!-- frame:cabinet-shop:start -->...<!-- frame:cabinet-shop:end -->`).
+- **Stored records** in `agent_definitions`, schedule entries, and seed bundles carrying a `replacedClaimFrom: "<frame-id>"` field marking what a frame layered.
+- **Per-instance frame manifest** at `~/services/hive/<instance-id>/frames/applied.json` (or wherever KPR-83 settles) listing currently-applied frames.
+
+`tune-instance` integrates as follows:
+
+- **Phase 1 audit**: when scanning constitution for drift, sections enclosed by frame anchors are tagged "frame-managed" and excluded from "remove redundant" findings. The audit may still flag a frame-managed section as informationally interesting ("this section was added by frame X; verify it still matches your needs"), but never as "drift to remove."
+- **Phase 1 audit**: when scanning agent definitions for tool/claim mismatches, records with `replacedClaimFrom` set are skipped — the frame is the authoritative claim, not the agent's own prompt drift.
+- **Phase 1 audit**: a new top-level finding category, **"frame integrity,"** flags inconsistencies between what `applied.json` says is applied and what's actually present (e.g., frame X claims to provide `daily-purchasing-scan` cron but the cron is missing). Resolution path is to re-apply or remove the frame, not to hand-edit.
+- **Phase 3 apply**: refuses to write any change that would alter frame-managed config without first asking the operator to confirm the frame-bypass. The operator can override with explicit consent ("yes, override frame X's section"), but the default is to defer the change as "blocked-by-frame."
+
+For a frame-naive instance (no `applied.json`, no anchored sections, no `replacedClaimFrom` fields), the frame-awareness logic is a no-op — skill behaves exactly like the playbook describes.
 
 ## Phase 2 — Operator review
 
