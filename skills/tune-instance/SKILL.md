@@ -80,7 +80,7 @@ Every agent's `coreServers` should include:
 ```
 
 - **Engine auto-injects 5**: `structured-memory` (paired with `memory`), `schedule`, `team`, `slack`, `workflow`. So the explicit gap is usually `keychain` + `contacts` + `event-bus` + `conversation-search` + `callback`.
-- **Verify auto-injection logic**: `src/agents/agent-runner.ts:865-880` — if engine version changes, the auto-injected set may drift.
+- **Verify auto-injection logic**: `buildAllServerConfigs()` in `src/agents/agent-runner.ts` (hive engine) — function-name reference rather than a line range so it stays accurate across engine versions; if the auto-injected set drifts, this is where to look.
 - **Per-agent extras** (above baseline): role-specific MCP servers (hubspot-crm for sales/marketing, dodi-ops for ops, code-task for engineering coordinators)
 
 ### 5. Memory hygiene tier audit
