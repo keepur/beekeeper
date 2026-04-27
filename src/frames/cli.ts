@@ -34,6 +34,17 @@ export async function runFrameCli(args: string[]): Promise<number> {
       const { auditInstance } = await import("./commands/audit.js");
       return await auditInstance(instanceId);
     }
+    case "remove": {
+      const frameName = args[1];
+      const instanceId = args[2];
+      if (!frameName || !instanceId) {
+        console.error("Usage: beekeeper frame remove <frame> <instance> [--force]");
+        return 1;
+      }
+      const flags = new Set(args.slice(3));
+      const { removeFrame } = await import("./commands/remove.js");
+      return await removeFrame(frameName, instanceId, { force: flags.has("--force") });
+    }
     case "list": {
       const instanceId = args[1];
       if (!instanceId) {
@@ -70,11 +81,13 @@ Subcommands:
                                        --force-override     replace conflicting peer claims (skills, schedule)
                                        --allow-seed-override insert a memory seed despite a peer claim
                                        --yes                non-interactive: auto-accept hooks + drift dialog (take-frame)
+  remove <frame> <instance> [--force] Remove an applied frame (reverses snapshot)
 
 Examples:
   beekeeper frame list dodi
   beekeeper frame audit dodi
   beekeeper frame apply ~/.beekeeper/frames/hive-baseline dodi --adopt
   beekeeper frame apply ~/.beekeeper/frames/hive-baseline dodi --yes
+  beekeeper frame remove hive-baseline dodi
 `);
 }
