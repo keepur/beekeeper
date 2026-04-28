@@ -472,6 +472,8 @@ export async function writeConstitutionAnchor(
   insertMode: ConstitutionInsertMode,
   targetAnchor: string | undefined,
   fragmentText: string,
+  title: string | undefined,
+  frameAnchors: Set<string>,
 ): Promise<{ snapshotBefore: string; insertedText: string }> {
   const coll = db.collection<ConstitutionDoc>("memory");
   const doc = await coll.findOne({ path: "shared/constitution.md" });
@@ -479,19 +481,21 @@ export async function writeConstitutionAnchor(
 
   let updated: string;
   if (insertMode === "replace-anchor") {
-    const block = extractAnchorNeighborhood(before, anchor);
+    const block = extractAnchorNeighborhood(before, anchor, frameAnchors);
     if (!block) {
       throw new Error(`constitution anchor "${anchor}" not found for replace-anchor`);
     }
     const idx = before.indexOf(block);
-    updated = before.slice(0, idx) + fragmentText + before.slice(idx + block.length);
+    const heading = title ? `### ${title}\n\n` : "";
+    const replacement = `<a id="${anchor}"></a>\n${heading}${fragmentText.trim()}\n`;
+    updated = before.slice(0, idx) + replacement + before.slice(idx + block.length);
   } else {
     if (!targetAnchor) {
       throw new Error(
         `constitution insert mode "${insertMode}" requires a targetAnchor`,
       );
     }
-    const targetBlock = extractAnchorNeighborhood(before, targetAnchor);
+    const targetBlock = extractAnchorNeighborhood(before, targetAnchor, frameAnchors);
     if (!targetBlock) {
       throw new Error(`constitution targetAnchor "${targetAnchor}" not found`);
     }
@@ -512,7 +516,7 @@ export async function writeConstitutionAnchor(
     { upsert: true },
   );
 
-  const insertedText = extractAnchorNeighborhood(updated, anchor);
+  const insertedText = extractAnchorNeighborhood(updated, anchor, frameAnchors);
   return { snapshotBefore: before, insertedText };
 }
 

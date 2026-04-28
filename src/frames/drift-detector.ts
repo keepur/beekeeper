@@ -55,6 +55,9 @@ async function checkConstitution(
   } catch {
     present = new Set();
   }
+  const frameAnchors = new Set(
+    (record.manifest.constitution ?? []).map((c) => c.anchor),
+  );
   for (const anchor of block.anchors) {
     if (!present.has(anchor)) {
       findings.push({
@@ -67,7 +70,7 @@ async function checkConstitution(
       continue;
     }
     const expected = block.insertedText[anchor] ?? "";
-    const actual = extractAnchorNeighborhood(content, anchor);
+    const actual = extractAnchorNeighborhood(content, anchor, frameAnchors);
     if (actual !== expected) {
       findings.push({
         frame: record._id,

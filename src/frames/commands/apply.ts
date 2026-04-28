@@ -309,6 +309,9 @@ async function executeFullApply(
     if (Object.keys(writtenPrompts).length > 0) resources.prompts = writtenPrompts;
 
     // 6f. constitution — capture single snapshot before the first write.
+    const constitutionFrameAnchors = new Set(
+      (manifest.constitution ?? []).map((c) => c.anchor),
+    );
     for (const c of manifest.constitution ?? []) {
       const key = resourceKey("constitution", c.anchor);
       if (forceWriteResources && !forceWriteResources.has(key)) continue;
@@ -325,6 +328,8 @@ async function executeFullApply(
         c.insert,
         c.targetAnchor,
         fragmentText,
+        c.title,
+        constitutionFrameAnchors,
       );
       if (constitutionSnapshotBefore === undefined) constitutionSnapshotBefore = snapshotBefore;
       constitutionInsertedText[c.anchor] = insertedText;
@@ -754,16 +759,17 @@ async function buildAdoptRecord(db: Db, manifest: FrameManifest): Promise<Applie
   }
   if (Object.keys(promptRec).length > 0) resources.prompts = promptRec;
 
-  // Constitution: full document snapshot + per-anchor neighborhood.
+  // Constitution: full document snapshot + per-anchor neighborhood (frame-scoped).
   const constitutionAnchors = (manifest.constitution ?? []).map((c) => c.anchor);
   if (constitutionAnchors.length > 0) {
     const doc = await db
       .collection<{ path: string; content: string }>("memory")
       .findOne({ path: "shared/constitution.md" });
     const fullText = doc?.content ?? "";
+    const constitutionFrameAnchors = new Set(constitutionAnchors);
     const insertedText: Record<string, string> = {};
     for (const a of constitutionAnchors) {
-      insertedText[a] = extractAnchorNeighborhood(fullText, a);
+      insertedText[a] = extractAnchorNeighborhood(fullText, a, constitutionFrameAnchors);
     }
     resources.constitution = {
       anchors: constitutionAnchors,

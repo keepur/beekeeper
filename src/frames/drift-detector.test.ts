@@ -98,4 +98,67 @@ describe("detectDrift", () => {
     expect(f.resource).toBe(resourceKey("constitution", "capabilities"));
     expect(f.informational).toBe(false);
   });
+
+  it("KPR-99/100: no false drift when constitution has non-frame anchors interleaved", async () => {
+    // Reproduces the post-apply audit scenario: writer used frame-scoped
+    // extraction with frameAnchors = {memory, capabilities}, recording a
+    // neighborhood that walks past the operator's <a id="internal-x">. Audit
+    // must use the same scoping (built from record.manifest.constitution),
+    // otherwise the re-extracted neighborhood would diverge and falsely
+    // report constitution-text-changed.
+    const content = [
+      "intro",
+      "",
+      "<a id=\"memory\"></a>",
+      "### Manage your memory lifecycle",
+      "",
+      "memory body",
+      "",
+      "<a id=\"internal-x\"></a>",
+      "operator's own subsection",
+      "",
+      "<a id=\"capabilities\"></a>",
+      "### capabilities",
+      "cap-body",
+      "",
+    ].join("\n");
+    const frameAnchors = new Set(["memory", "capabilities"]);
+    const memoryNeighborhood = extractAnchorNeighborhood(content, "memory", frameAnchors);
+    const capabilitiesNeighborhood = extractAnchorNeighborhood(
+      content,
+      "capabilities",
+      frameAnchors,
+    );
+
+    const record = makeRecord({
+      manifest: {
+        name: "test-frame",
+        version: "1.0.0",
+        rootPath: "/tmp/frame",
+        constitution: [
+          { anchor: "memory", insert: "replace-anchor", file: "ignored.md" },
+          { anchor: "capabilities", insert: "replace-anchor", file: "ignored.md" },
+        ],
+      },
+      resources: {
+        constitution: {
+          anchors: ["memory", "capabilities"],
+          snapshotBefore: content,
+          insertedText: {
+            memory: memoryNeighborhood,
+            capabilities: capabilitiesNeighborhood,
+          },
+        },
+      },
+    });
+
+    const db = makeMockDb({ memory: { content } });
+    const findings = await detectDrift(db, record, "/tmp/svc");
+    const constitutionDrift = findings.filter(
+      (f) =>
+        f.kind === "constitution-text-changed" ||
+        f.kind === "constitution-anchor-missing",
+    );
+    expect(constitutionDrift).toEqual([]);
+  });
 });
