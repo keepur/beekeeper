@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, unlinkSync, existsSync, chmodSync, copyFileSy
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "../logging/logger.js";
-import { installSkillSymlink, removeSkillSymlink } from "./skill-installer.js";
+import { installAllSkillSymlinks, removeAllSkillSymlinks } from "./skill-installer.js";
 
 const log = createLogger("beekeeper-service");
 
@@ -258,15 +258,19 @@ export function install(configDir?: string): void {
   console.log(`Stop with:  launchctl unload ${plistPath}`);
 
   try {
-    const skillResult = installSkillSymlink();
-    if (skillResult.status === "created") {
-      console.log(`Skill installed: ${skillResult.linkPath} → ${skillResult.targetPath}`);
-    } else if (skillResult.status === "replaced") {
-      console.log(`Skill symlink replaced: ${skillResult.linkPath} → ${skillResult.targetPath}`);
-    } else if (skillResult.status === "already-current") {
-      // silent — re-run idempotence
-    } else if (skillResult.status === "blocked-real-dir") {
-      console.log(`Skill NOT installed (real directory at ${skillResult.linkPath}): ${skillResult.detail}`);
+    const reports = installAllSkillSymlinks();
+    for (const { skill, result } of reports) {
+      if (result.status === "created") {
+        console.log(`Skill installed (${skill}): ${result.linkPath} → ${result.targetPath}`);
+      } else if (result.status === "replaced") {
+        console.log(`Skill symlink replaced (${skill}): ${result.linkPath} → ${result.targetPath}`);
+      } else if (result.status === "already-current") {
+        // silent — re-run idempotence
+      } else if (result.status === "blocked-real-dir") {
+        console.log(
+          `Skill NOT installed (${skill}; real directory at ${result.linkPath}): ${result.detail ?? ""}`,
+        );
+      }
     }
   } catch (err) {
     log.warn("Skill install failed", { error: err instanceof Error ? err.message : String(err) });
@@ -292,11 +296,13 @@ export function uninstall(): void {
   // It's harmless without the plist and users may still invoke it manually
   // from the shell.
 
-  const skillRemove = removeSkillSymlink();
-  if (skillRemove.status === "removed") {
-    console.log(`Skill symlink removed: ${skillRemove.linkPath}`);
-  } else if (skillRemove.status === "skipped-real-dir") {
-    console.log(`Skill at ${skillRemove.linkPath} is a real directory — not removing.`);
+  const skillRemoveReports = removeAllSkillSymlinks();
+  for (const { skill, result } of skillRemoveReports) {
+    if (result.status === "removed") {
+      console.log(`Skill symlink removed (${skill}): ${result.linkPath}`);
+    } else if (result.status === "skipped-real-dir") {
+      console.log(`Skill at ${result.linkPath} is a real directory — not removing (${skill}).`);
+    }
+    // "not-present" → silent
   }
-  // "not-present" → silent
 }
