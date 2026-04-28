@@ -212,4 +212,49 @@ describe.runIf(HAS_TEST_URI)("frames Phase 2 e2e smoke (apply -> audit -> remove
     expect(constAfter?.content).not.toContain("Smoke replacement capabilities clause");
     expect(constAfter?.content).toContain("original capabilities body");
   });
+
+  it("KPR-107: malformed constitution blocks apply by default; --force-malformed lets it through", async () => {
+    const manifest = makeManifest();
+    const instance = makeInstance();
+
+    // First apply: clean constitution, no malformed targets — succeeds.
+    const firstExit = await executeFullApply(db, manifest, instance, { yes: true });
+    expect(firstExit).toBe(0);
+
+    // Inject a duplicate anchor into the constitution so the pre-flight
+    // malformed-target check trips on the next apply.
+    const constDoc = await db
+      .collection<{ path: string; content: string }>("memory")
+      .findOne({ path: "shared/constitution.md" });
+    const corrupted = `${constDoc!.content}\n<a id="capabilities"></a>\nduplicate body\n`;
+    await db
+      .collection("memory")
+      .updateOne(
+        { path: "shared/constitution.md" },
+        { $set: { content: corrupted } },
+      );
+
+    // Second apply WITHOUT --force-malformed: must refuse with exit 1.
+    const blockedExit = await executeFullApply(db, manifest, instance, {
+      yes: true,
+    });
+    expect(blockedExit).toBe(1);
+
+    // Constitution still corrupted (untouched by the blocked apply).
+    const stillCorrupted = await db
+      .collection<{ path: string; content: string }>("memory")
+      .findOne({ path: "shared/constitution.md" });
+    expect(stillCorrupted?.content).toBe(corrupted);
+
+    // Third apply WITH --force-malformed: the pre-flight gate is bypassed.
+    // detectDrift's malformed findings are filtered out of the dialog set
+    // (the operator already opted in), so the drift-resolved-apply continues
+    // normally. Exit code is 0 — apply ran (no-op or take-frame, depending
+    // on whether the duplicate falls inside any frame anchor neighborhood).
+    const forcedExit = await executeFullApply(db, manifest, instance, {
+      yes: true,
+      forceMalformed: true,
+    });
+    expect(forcedExit).toBe(0);
+  });
 });

@@ -9,7 +9,7 @@ import { resolveInstance } from "../instance-resolver.js";
 import { withInstanceDb } from "../mongo-client.js";
 import { AppliedFramesStore } from "../applied-frames-store.js";
 import { loadManifest } from "../manifest-loader.js";
-import { collectAnchorSet } from "../anchor-resolver.js";
+import { collectAnchorSet, findAnchors } from "../anchor-resolver.js";
 import { detectDrift } from "../drift-detector.js";
 import { runDriftDialog } from "../drift-dialog.js";
 import { applyDriftDecisions } from "./audit.js";
@@ -51,6 +51,14 @@ export interface ApplyOptions {
   adopt?: boolean;
   forceOverride?: boolean;
   allowSeedOverride?: boolean;
+  /**
+   * KPR-107: opt-out of the malformed-finding block. By default, an applied
+   * frame whose target document (constitution / agent systemPrompt) cannot
+   * be parsed by `collectAnchorSet` causes `apply` to refuse to write.
+   * Set this to proceed past that block — useful when the operator knows
+   * the document is malformed and wants the frame to overwrite it.
+   */
+  forceMalformed?: boolean;
   yes?: boolean;
 }
 
@@ -77,7 +85,7 @@ export async function applyFrame(
 
   return await withInstanceDb(instance, async (db) => {
     if (opts.adopt) {
-      return await runAdopt(db, manifest, instance);
+      return await runAdopt(db, manifest, instance, opts);
     }
     return await executeFullApply(db, manifest, instance, opts);
   });
@@ -87,6 +95,7 @@ async function runAdopt(
   db: Db,
   manifest: FrameManifest,
   instance: ResolvedInstance,
+  opts: ApplyOptions = {},
 ): Promise<number> {
   const store = new AppliedFramesStore(db);
   const existing = await store.get(manifest.name);
@@ -95,6 +104,24 @@ async function runAdopt(
       `Frame "${manifest.name}" v${manifest.version} already adopted on "${instance.id}". No change.`,
     );
     return 0;
+  }
+  // KPR-107: malformed-target pre-flight (same as executeFullApply). Adopt
+  // recording a baseline against a malformed document is a recipe for
+  // confused subsequent audits — refuse unless `--force-malformed`.
+  if (!opts.forceMalformed) {
+    const blocked = await detectMalformedTargets(db, manifest, (sel) =>
+      resolveAgents(db, sel),
+    );
+    if (blocked.length > 0) {
+      console.error(
+        `Frame "${manifest.name}" v${manifest.version}: refusing to adopt — ${blocked.length} malformed target document(s):`,
+      );
+      for (const m of blocked) {
+        console.error(`  ${m.kind}: ${m.detail}`);
+      }
+      console.error(`Pass --force-malformed to adopt anyway.`);
+      return 1;
+    }
   }
   await verifyAnchors(db, manifest, (sel) => resolveAgents(db, sel));
   const record = await buildAdoptRecord(db, manifest);
@@ -135,6 +162,27 @@ async function executeFullApply(
 ): Promise<number> {
   const store = new AppliedFramesStore(db);
 
+  // KPR-107: pre-flight malformed-document check. Catches duplicate-anchor
+  // (or any other `collectAnchorSet` throw) on first-time apply too, where
+  // there is no existing record for `detectDrift` to run against. Behavior
+  // matches the drift-resolved-apply gate below: refuse with a clean error
+  // unless the operator passes `--force-malformed`.
+  if (!opts.forceMalformed) {
+    const blocked = await detectMalformedTargets(db, manifest, (sel) =>
+      resolveAgents(db, sel),
+    );
+    if (blocked.length > 0) {
+      console.error(
+        `Frame "${manifest.name}" v${manifest.version}: refusing to apply — ${blocked.length} malformed target document(s):`,
+      );
+      for (const m of blocked) {
+        console.error(`  ${m.kind}: ${m.detail}`);
+      }
+      console.error(`Pass --force-malformed to apply anyway.`);
+      return 1;
+    }
+  }
+
   // Step 2: validate anchors (with wildcard agent resolution) + requires/conflicts.
   await verifyAnchors(db, manifest, (sel) => resolveAgents(db, sel));
   await verifyRequiresConflicts(store, manifest);
@@ -147,7 +195,14 @@ async function executeFullApply(
   let newDecisions: DriftDecision[] = [];
   if (existing && existing.version === manifest.version) {
     const raw = await detectDrift(db, existing, instance.servicePath);
-    const filtered = applyDriftDecisions(existing, raw);
+    // KPR-107: malformed findings on the same-version drift-resolved-apply
+    // path are filtered out here — the pre-flight check above already
+    // refuses unless `--force-malformed`. With force, we deliberately let
+    // these findings flow through so the operator's take-frame decision can
+    // overwrite the malformed document.
+    const filtered = applyDriftDecisions(existing, raw).filter(
+      (f) => f.kind !== "constitution-malformed" && f.kind !== "prompt-malformed",
+    );
     const actionable = filtered.filter((f) => !f.informational);
     if (actionable.length === 0) {
       console.log(
@@ -776,6 +831,74 @@ async function verifyRequiresConflicts(
   }
 }
 
+/**
+ * KPR-107: pre-flight scan for malformed target documents. Returns a list of
+ * malformed findings (one per affected document). Mirrors the drift detector's
+ * `constitution-malformed` / `prompt-malformed` emission, but runs against the
+ * frame's manifest (rather than an applied record) so it covers first-time
+ * apply too.
+ *
+ * Only the documents the frame actually targets are scanned — a malformed
+ * agent systemPrompt for an agent the frame doesn't touch is not the frame's
+ * concern.
+ */
+interface MalformedFinding {
+  kind: "constitution-malformed" | "prompt-malformed";
+  detail: string;
+}
+async function detectMalformedTargets(
+  db: Db,
+  manifest: FrameManifest,
+  agentResolver: (selector: string[]) => Promise<string[]>,
+): Promise<MalformedFinding[]> {
+  const out: MalformedFinding[] = [];
+
+  if ((manifest.constitution ?? []).length > 0) {
+    const doc = await db
+      .collection<{ path: string; content: string }>("memory")
+      .findOne({ path: "shared/constitution.md" });
+    if (doc) {
+      try {
+        collectAnchorSet(doc.content);
+      } catch (e) {
+        out.push({
+          kind: "constitution-malformed",
+          detail: `cannot parse shared/constitution.md: ${(e as Error).message}`,
+        });
+      }
+    }
+  }
+
+  if ((manifest.prompts ?? []).length > 0) {
+    const targetAgents = new Set<string>();
+    for (const p of manifest.prompts ?? []) {
+      const ids =
+        p.agents.length === 1 && p.agents[0] === "*"
+          ? await agentResolver(["*"])
+          : p.agents.filter((a) => a !== "*");
+      for (const id of ids) targetAgents.add(id);
+    }
+    if (targetAgents.size > 0) {
+      const agents = await db
+        .collection<{ _id: string; systemPrompt?: string }>("agent_definitions")
+        .find({ _id: { $in: [...targetAgents] } })
+        .toArray();
+      for (const a of agents) {
+        try {
+          collectAnchorSet(a.systemPrompt ?? "");
+        } catch (e) {
+          out.push({
+            kind: "prompt-malformed",
+            detail: `cannot parse agent_definitions[${a._id}].systemPrompt: ${(e as Error).message}`,
+          });
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
 async function verifyAnchors(
   db: Db,
   manifest: FrameManifest,
@@ -799,7 +922,13 @@ async function verifyAnchors(
         "shared/constitution.md (not found)",
       );
     }
-    const present = collectAnchorSet(doc.content);
+    // KPR-107: verifyAnchors only checks anchor *presence* — duplicates do
+    // not invalidate that check (the anchor IS present, just twice). The
+    // malformed condition is surfaced separately by the drift detector and
+    // gated by `--force-malformed` in executeFullApply. Use the permissive
+    // anchor list (no duplicate-throw) here so a malformed document doesn't
+    // get rejected with an unhandled throw before reaching the gate.
+    const present = new Set(findAnchors(doc.content).map((a) => a.anchor));
     for (const a of constitutionRequired) {
       if (!present.has(a)) {
         throw new MissingAnchorError(manifest.name, "constitution", a, "shared/constitution.md");
@@ -831,7 +960,8 @@ async function verifyAnchors(
     const byId = new Map(agents.map((a) => [a._id, a.systemPrompt ?? ""]));
     for (const [agentId, anchors] of promptAnchorsByAgent) {
       const text = byId.get(agentId) ?? "";
-      const present = collectAnchorSet(text);
+      // KPR-107: see comment on the constitution branch above.
+      const present = new Set(findAnchors(text).map((a) => a.anchor));
       for (const a of anchors) {
         if (!present.has(a)) {
           throw new MissingAnchorError(

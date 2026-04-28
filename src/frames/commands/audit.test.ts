@@ -67,6 +67,25 @@ describe("summarizeAudit", () => {
     expect(summary.message).not.toMatch(/^\s*drift:/m);
   });
 
+  it("KPR-107: malformed finding renders as actionable drift line, exits 1", () => {
+    const findings: DriftFinding[] = [
+      {
+        frame: "dodi-cabinets@1.0.0",
+        kind: "constitution-malformed",
+        resource: resourceKey("constitution", "shared/constitution.md"),
+        detail:
+          'frame "dodi-cabinets@1.0.0" cannot audit constitution: Duplicate anchor in document: "capabilities"',
+        informational: false,
+      },
+    ];
+    const summary = summarizeAudit("dodi", 1, findings);
+    expect(summary.exitCode).toBe(1);
+    expect(summary.message).toMatch(
+      /^\s*drift:\s+\[constitution-malformed\] dodi-cabinets@1\.0\.0/m,
+    );
+    expect(summary.message).toContain("Duplicate anchor");
+  });
+
   it("prints actionable findings before informational", () => {
     const findings: DriftFinding[] = [
       {
