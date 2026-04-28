@@ -8,7 +8,7 @@ export async function runFrameCli(args: string[]): Promise<number> {
       const instanceId = args[2];
       if (!framePath || !instanceId) {
         console.error(
-          "Usage: beekeeper frame apply <framePath> <instance> [--adopt] [--force-override] [--allow-seed-override] [--yes]",
+          "Usage: beekeeper frame apply <framePath> <instance> [--adopt] [--force-override] [--allow-seed-override] [--force-malformed] [--yes]",
         );
         return 1;
       }
@@ -16,12 +16,14 @@ export async function runFrameCli(args: string[]): Promise<number> {
       const adopt = flags.includes("--adopt");
       const forceOverride = flags.includes("--force-override");
       const allowSeedOverride = flags.includes("--allow-seed-override");
+      const forceMalformed = flags.includes("--force-malformed");
       const yes = flags.includes("--yes");
       const { applyFrame } = await import("./commands/apply.js");
       return await applyFrame(framePath, instanceId, {
         adopt,
         forceOverride,
         allowSeedOverride,
+        forceMalformed,
         yes,
       });
     }
@@ -80,6 +82,7 @@ Subcommands:
                                        --adopt              record current state as conformant (no writes)
                                        --force-override     replace conflicting peer claims (skills, schedule)
                                        --allow-seed-override insert a memory seed despite a peer claim
+                                       --force-malformed    apply even if target document (constitution/systemPrompt) is malformed
                                        --yes                non-interactive: auto-accept hooks + drift dialog (take-frame)
   remove <frame> <instance> [--force] Remove an applied frame (reverses snapshot)
 

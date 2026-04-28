@@ -22,18 +22,27 @@ function makeRecord(overrides: Partial<AppliedFrameRecord> = {}): AppliedFrameRe
 
 interface MockResponses {
   memory?: { content: string } | null;
+  agentDefs?: Array<{ _id: string; systemPrompt?: string }>;
 }
 
 function makeMockDb(responses: MockResponses): Db {
-  // Per-collection mock — only `memory` is exercised for the constitution-only tests.
+  // Per-collection mock. `memory` covers constitution; `agent_definitions`
+  // covers per-agent systemPrompt for prompt drift checks.
   const memoryColl = {
     findOne: async (q: { path: string }) => {
       void q;
       return responses.memory ?? null;
     },
   };
+  const agentDefsColl = {
+    findOne: async (q: { _id: string }) => {
+      const found = (responses.agentDefs ?? []).find((a) => a._id === q._id);
+      return found ?? null;
+    },
+  };
   const collection = (name: string): unknown => {
     if (name === "memory") return memoryColl;
+    if (name === "agent_definitions") return agentDefsColl;
     return {
       findOne: async () => null,
       find: () => ({ toArray: async () => [] }),
@@ -160,5 +169,97 @@ describe("detectDrift", () => {
         f.kind === "constitution-anchor-missing",
     );
     expect(constitutionDrift).toEqual([]);
+  });
+
+  it("KPR-107: duplicate constitution anchor emits constitution-malformed (not N anchor-missing)", async () => {
+    // Setup: the recorded frame has two anchors. The live document has a
+    // duplicate of one of them — `collectAnchorSet` will throw. Pre-KPR-107
+    // this would silently produce an empty Set and emit
+    // `constitution-anchor-missing` for both anchors. Now we expect a single
+    // `constitution-malformed` finding pointing at the underlying error.
+    const original = `<a id="memory"></a>\nbody-m\n<a id="capabilities"></a>\nbody-c`;
+    const drifted = `<a id="memory"></a>\nbody-m\n<a id="capabilities"></a>\n<a id="capabilities"></a>\nbody-c`;
+    const expectedM = extractAnchorNeighborhood(original, "memory");
+    const expectedC = extractAnchorNeighborhood(original, "capabilities");
+
+    const record = makeRecord({
+      manifest: {
+        name: "test-frame",
+        version: "1.0.0",
+        rootPath: "/tmp/frame",
+        constitution: [
+          { anchor: "memory", insert: "replace-anchor", file: "ignored.md" },
+          { anchor: "capabilities", insert: "replace-anchor", file: "ignored.md" },
+        ],
+      },
+      resources: {
+        constitution: {
+          anchors: ["memory", "capabilities"],
+          snapshotBefore: original,
+          insertedText: { memory: expectedM, capabilities: expectedC },
+        },
+      },
+    });
+
+    const db = makeMockDb({ memory: { content: drifted } });
+    const findings = await detectDrift(db, record, "/tmp/svc");
+
+    const malformed = findings.filter((f) => f.kind === "constitution-malformed");
+    expect(malformed.length).toBe(1);
+    expect(malformed[0].informational).toBe(false);
+    expect(malformed[0].detail).toContain("Duplicate anchor");
+    expect(malformed[0].detail).toContain("capabilities");
+
+    // Should NOT emit anchor-missing for either anchor — those would be
+    // misleading given the real cause.
+    const anchorMissing = findings.filter(
+      (f) => f.kind === "constitution-anchor-missing",
+    );
+    expect(anchorMissing).toEqual([]);
+  });
+
+  it("KPR-107: duplicate prompt anchor on one agent emits prompt-malformed for that agent only", async () => {
+    // Setup: prompts block for two agents. Agent A's systemPrompt has a
+    // duplicate anchor — should emit `prompt-malformed` and skip per-anchor
+    // checks for A. Agent B's prompt is well-formed but missing the required
+    // anchor — should still emit `prompt-anchor-missing`.
+    const aliceDuplicate = `<a id="role-spec"></a>\n<a id="role-spec"></a>\nbody`;
+    const bobMissing = `no anchors here`;
+
+    const record = makeRecord({
+      resources: {
+        prompts: {
+          alice: {
+            anchors: ["role-spec"],
+            snapshotBefore: aliceDuplicate,
+            insertedText: { "role-spec": "expected" },
+          },
+          bob: {
+            anchors: ["role-spec"],
+            snapshotBefore: bobMissing,
+            insertedText: { "role-spec": "expected" },
+          },
+        },
+      },
+    });
+
+    const db = makeMockDb({
+      memory: { content: "" },
+      agentDefs: [
+        { _id: "alice", systemPrompt: aliceDuplicate },
+        { _id: "bob", systemPrompt: bobMissing },
+      ],
+    });
+    const findings = await detectDrift(db, record, "/tmp/svc");
+
+    const malformed = findings.filter((f) => f.kind === "prompt-malformed");
+    expect(malformed.length).toBe(1);
+    expect(malformed[0].resource).toContain("alice");
+    expect(malformed[0].detail).toContain("Duplicate anchor");
+    expect(malformed[0].informational).toBe(false);
+
+    const missing = findings.filter((f) => f.kind === "prompt-anchor-missing");
+    expect(missing.length).toBe(1);
+    expect(missing[0].resource).toContain("bob");
   });
 });
