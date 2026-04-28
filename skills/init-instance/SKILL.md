@@ -35,7 +35,56 @@ At Phase 1 entry the skill allocates a fresh ULID (`<runId>`) that flows through
 
 ## Phase 0 — Pre-flight + state detection
 
-[FILLED IN BY TASK 5]
+Before Phase 1 starts, detect the instance's current init state via the shared `detectInstanceState()` primitive (canonical implementation: `src/init/detect-instance-state.ts`). Both Phase 0 and Phase 4-resume invoke the same CLI subcommand so they cannot disagree about what "initialized" means.
+
+### Invocation
+
+Run `beekeeper init-state <instance-id> --json` via Bash. The command prints a JSON object to stdout shaped:
+
+```
+{
+  "state": "fresh" | "partial" | "completed",
+  "detail": {
+    "section2Written": boolean,
+    "frameApplied": boolean,
+    "cosSeeded": boolean,
+    "handoffMemoryWritten": boolean,
+    "lastInitRunId": string | null,
+    "lastInitAppliedAt": string | null
+  }
+}
+```
+
+Decision rule:
+
+- All four detail booleans `true` → `completed`.
+- All four `false` → `fresh`.
+- Any other combination → `partial`.
+
+Branch on the returned `state` field. If the operator chose a non-default CoS slug in a prior run (e.g., `mokie`), pass `--cos-agent-id <slug>` so detection picks up the right record.
+
+### Branches
+
+- **`fresh`** → proceed to Phase 1 normally.
+- **`partial`** → surface the detected partial state to the operator: which artifacts are present (Section 2 written? frame manifest? CoS in `agent_definitions`? handoff memory record?), which are missing, and the last `appliedAt` if known. Ask: "this instance was partially initialized at `<lastInitAppliedAt>`. Resume from where init left off, or redo from scratch?"
+  - **Resume** → re-run Phase 1 only for the pieces that aren't durable yet (e.g., if Section 2 was written but CoS wasn't seeded, re-ask the CoS-shaping questions). Conversation context isn't replayable across sessions; only artifacts are durable, so the operator may re-answer some questions.
+  - **Redo from scratch** → remove existing partial artifacts (with operator confirmation per artifact, since this is destructive) and proceed to Phase 1 fresh.
+- **`completed`** → refuse with: "instance `<id>` is already initialized (Section 2 written, frame applied, CoS seeded, last init at `<appliedAt>`). To update Section 2, hire new agents, or fix drift, use the `tune-instance` skill (KPR-72) or a future `cos:hire-agent` skill. To re-init from scratch anyway, confirm explicitly with `force re-init <instance-id>`."
+  - On explicit `force re-init <instance-id>` confirmation, behave as if state were `partial` with `redo from scratch` selected (per-artifact confirmation, finding-by-finding).
+
+### Phase 0.5 — Dependency pre-flight
+
+Before the interview, verify OS-level deps are reachable so a Mongo connection failure mid-Phase-4 doesn't waste an interview's worth of operator time:
+
+- **Mongo**: `mongosh --eval "db.runCommand({ping:1})"` returns `{ok: 1}` against `mongodb://localhost`.
+- **Qdrant** (if the frame's coreServers depend on `structured-memory`): `curl -s http://localhost:6333/healthz` returns 200.
+- **Ollama** (if the frame's coreServers depend on local embeddings): `curl -s http://localhost:11434/api/tags` returns 200.
+
+If any dep is down, fail fast: "Operator, before we start the interview: `<dep>` isn't reachable. Check that `bootstrap.sh` ran fully, then re-invoke." Do NOT enter Phase 1.
+
+### Note on the canonical implementation
+
+The TypeScript module at `src/init/detect-instance-state.ts` is the single source of truth for what "initialized" means. The CLI subcommand wraps it; Phase 4-resume detection invokes the same CLI. If you find yourself wanting to write parallel mongosh checks, stop — extend the primitive instead and update both call sites at once.
 
 ## Phase 1 — Discover (operator interview)
 
