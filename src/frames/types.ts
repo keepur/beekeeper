@@ -125,12 +125,14 @@ export interface AppliedResources {
 export type DriftKind =
   | "constitution-text-changed"
   | "constitution-anchor-missing"
+  | "constitution-malformed"
   | "skill-modified-locally"
   | "skill-missing"
   | "coreserver-missing"
   | "schedule-missing"
   | "prompt-text-changed"
   | "prompt-anchor-missing"
+  | "prompt-malformed"
   | "seed-missing"
   | "overridden-claim";
 

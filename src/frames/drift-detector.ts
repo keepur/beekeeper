@@ -49,11 +49,24 @@ async function checkConstitution(
     .collection<ConstitutionDoc>("memory")
     .findOne({ path: "shared/constitution.md" });
   const content = doc?.content ?? "";
+  // KPR-107: surface malformed-document errors as a distinct, actionable
+  // finding rather than swallowing into an empty set. Pre-KPR-106 (PR #38),
+  // the only known cause of `collectAnchorSet` throwing was the in-fragment
+  // anchor-tag bug fixed there. Keeping the fail-safe but making it
+  // observable means future malformed-document causes won't masquerade as N
+  // spurious `constitution-anchor-missing` findings.
   let present: Set<string>;
   try {
     present = collectAnchorSet(content);
-  } catch {
-    present = new Set();
+  } catch (e) {
+    findings.push({
+      frame: record._id,
+      kind: "constitution-malformed",
+      resource: resourceKey("constitution", "shared/constitution.md"),
+      detail: `frame "${record._id}" cannot audit constitution: ${(e as Error).message}`,
+      informational: false,
+    });
+    return;
   }
   const frameAnchors = new Set(
     (record.manifest.constitution ?? []).map((c) => c.anchor),
@@ -194,11 +207,21 @@ async function checkPrompts(
   for (const [agentId, promptBlock] of Object.entries(block)) {
     const doc = await coll.findOne({ _id: agentId });
     const currentPrompt = doc?.systemPrompt ?? "";
+    // KPR-107: malformed prompt for one agent emits a distinct finding for
+    // that agent and skips its per-anchor checks; other agents in the same
+    // record still get audited. See parallel block in checkConstitution.
     let present: Set<string>;
     try {
       present = collectAnchorSet(currentPrompt);
-    } catch {
-      present = new Set();
+    } catch (e) {
+      findings.push({
+        frame: record._id,
+        kind: "prompt-malformed",
+        resource: resourceKey("prompts", agentId, "systemPrompt"),
+        detail: `frame "${record._id}" cannot audit prompts on agent "${agentId}": ${(e as Error).message}`,
+        informational: false,
+      });
+      continue;
     }
     for (const anchor of promptBlock.anchors) {
       if (!present.has(anchor)) {
