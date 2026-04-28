@@ -18,9 +18,9 @@ export interface InstanceStateDetail {
   frameApplied: boolean;
   /**
    * True iff `agent_definitions` has the CoS agent with a non-default
-   * `systemPrompt`. Heuristic: prompt length > 200 chars (frame template
-   * baseline is ~120). The 200 magic number is documented in `instance-state`
-   * spec; replace with a frame-manifest constant once KPR-86 exposes one.
+   * `systemPrompt`. Heuristic: prompt length exceeds the engine-shipped
+   * default seed length plus a small epsilon. See
+   * `COS_PROMPT_NONDEFAULT_THRESHOLD` below for derivation.
    */
   cosSeeded: boolean;
   /**
@@ -62,8 +62,36 @@ const CONSTITUTION_MEMORY_COLLECTION = "memory";
 const CONSTITUTION_PATH = "shared/constitution.md";
 const SECTION_2_ANCHOR_NAME = "section-2";
 
-/** Minimum systemPrompt length to consider CoS "operator-tuned" rather than frame-template baseline. */
-const COS_PROMPT_NONDEFAULT_THRESHOLD = 200;
+/**
+ * Minimum systemPrompt length to consider CoS "operator-tuned" rather than
+ * the engine-shipped default seed.
+ *
+ * Pinned to the engine-shipped default CoS systemPrompt length (230 chars)
+ * plus a 50-char epsilon for minor template polish. The hive-baseline frame
+ * does NOT ship per-agent prompt content — frame scope is constitution
+ * anchors, skills, coreservers, and schedule. The canonical default lives
+ * in the engine repo at `seeds/chief-of-staff/agent.yaml` (`systemPrompt`
+ * field), which the hive setup wizard inserts verbatim into
+ * `agent_definitions` on a fresh install (only `name` and `channels` are
+ * customized at install time). So a freshly-seeded but un-tuned instance
+ * produces a 230-char prompt and we want to detect that as NOT
+ * operator-tuned.
+ *
+ * Operator-tuned prompts run into thousands of chars (typical seeds in the
+ * dodi plugin are 1,000-3,000; a fully written CoS system-prompt.md runs
+ * 8,000+), so 280 sits in a wide gap between the two regimes.
+ *
+ * Locked to real content via `ENGINE_DEFAULT_COS_PROMPT` in
+ * `detect-instance-state.test.ts` — that test asserts the verbatim default
+ * is detected as `cosSeeded === false`. If the engine default grows past
+ * 230 chars (template polish, new bullet, expanded role description),
+ * update the constant here AND the matching test fixture.
+ *
+ * If hive-baseline ever takes ownership of the CoS default prompt, revisit
+ * KPR-109 Option A: read the threshold from a frame manifest constant
+ * instead of pinning it locally.
+ */
+const COS_PROMPT_NONDEFAULT_THRESHOLD = 280;
 
 interface AppliedFrameRow {
   _id: string;
