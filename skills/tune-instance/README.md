@@ -1,6 +1,6 @@
 # tune-instance — Operator Guide
 
-Periodic audit-and-tune pass on a Hive instance, surfaced through Beekeeper. The skill walks 9 audit categories (constitution, business-context, per-agent prompts, coreServer baseline, memory tiers, cron→skill wiring, schedules, naming/dignity, frame integrity) on a target hive, bundles drift into a single numbered report, and applies operator-approved findings. It's for the human running Beekeeper — usually the instance owner — and is meant to run roughly every 2 weeks (per the `schedule` frontmatter, which is informational for v1).
+Periodic audit-and-tune pass on a Hive instance, surfaced through Beekeeper. The skill walks 11 audit categories (constitution, business-context, per-agent prompts, coreServer baseline, memory tiers, cron→skill wiring, schedules, naming/dignity, frame integrity, engine-superseded prompt instructions, rule-mismatch) on a target hive, bundles drift into a single numbered report, and applies operator-approved findings. It's for the human running Beekeeper — usually the instance owner — and is meant to run roughly every 2 weeks (per the `schedule` frontmatter, which is informational for v1).
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ The skill resolves the instance from natural-language phrasing. If multiple inst
 ## What each phase does
 
 - **Phase 1 — Read-only audit.** Walks the 9 audit steps, collects raw findings, no writes. The operator sees nothing yet.
-- **Phase 2 — Operator review.** Bundles findings into one report, numbered with category prefixes (`C/B/P/T/M/K/S/N/F`). The operator responds with a cherry-pick selection. The skill confirms the parsed plan before doing anything; an ambiguous response gets one targeted clarifying question, and a second ambiguous response abandons Phase 3 (Phase 4 still runs).
+- **Phase 2 — Operator review.** Bundles findings into one report, numbered with category prefixes (`C/B/P/T/M/K/S/N/F/E/R`). The operator responds with a cherry-pick selection. The skill confirms the parsed plan before doing anything; an ambiguous response gets one targeted clarifying question, and a second ambiguous response abandons Phase 3 (Phase 4 still runs).
 - **Phase 3 — Apply with consent.** Executes only the findings the operator approved. Each write tags `updatedBy`. Section 1 (Authority, Hard Limits) edits require explicit override unless the change is plain template-drift backfill; ambiguity on a Section 1 finding scopes-out that single finding only, the rest of Phase 3 continues.
 - **Phase 4 — Save findings.** Writes a `<runId>.md` doc to `~/services/hive/<instance-id>/tune-runs/` with the report at the top and a JSON block at the bottom mapping each finding's signature to its disposition (applied / deferred / skipped). Updates `_index.md`. The next run reads this to surface deferred findings under "DEFERRED FROM PREVIOUS RUN".
 
@@ -34,6 +34,7 @@ By example. The skill parses these conversationally:
 - `apply C1, C3, P2; defer M1; skip B2` — explicit per-finding selection.
 - `apply C1-C3 and all the M findings; skip the rest` — range + category + skip-rest.
 - `apply P2 with trim-role; defer P1` — sub-action selection where a finding offers two paths.
+- `apply E1, E2; defer R1` — engine-superseded fixes are usually safe (the engine already handles the behavior); rule-mismatch may want operator review of the rewrite vs. remove-tool choice.
 
 Verbs:
 - `apply` — execute the proposed change in Phase 3.
@@ -78,6 +79,24 @@ If Phase 4's filesystem write fails (disk full, permissions, missing tune-runs d
 - **"Real directory collision warning"** — operator forked the skill previously into `~/.claude/skills/tune-instance/` as a real directory. The installer refuses to clobber operator-owned content. Resolve with `rm -rf ~/.claude/skills/tune-instance` and re-run `beekeeper install` to take the canonical version, OR keep the fork (the warning is informational).
 - **"Instance auto-resolution failing"** — pass `<instance-id>` explicitly in the invocation, e.g. `Run tune-instance on dodi`.
 - **"SIGUSR1 didn't pick up an agent change"** — verify the running PID with `pgrep -fa "hive-agent <instance-id>"`, then `kill -USR1 <pid>` manually. The skill's apply step emits the exact command to run.
+
+## Audit categories at a glance
+
+| Prefix | Category | Walkthrough |
+|---|---|---|
+| `C` | Constitution drift | redundancy, template-drift backfills, sections that duplicate business-context |
+| `B` | Business-context separation | org/escalation content that belongs in constitution; team-directory accuracy |
+| `P` | Per-agent prompts | length, DRY, voice, approval-delegation, cron-pointer, model ceiling |
+| `T` | coreServers baseline | universal-9 gaps |
+| `M` | Memory hygiene | hot/warm/cold tier sanity, duplicates, conversational meta-text |
+| `K` | Cron → skill wiring | scheduled tasks resolve to a real skill |
+| `S` | Skill availability | per-instance skills/ overrides, post-0.2.0 migration recovery |
+| `N` | Naming/identity | agent-dir convention, Slack channel naming, email-address conventions |
+| `F` | Frame integrity | post-KPR-83; `applied.json` ↔ live config consistency |
+| `E` | Engine-superseded prompt instructions | per-agent prompt sentences telling the agent to do what the engine already does (added KPR-102, motivated by KPR-97) |
+| `R` | Rule-mismatch | tool advertisements in prompt/seed that violate a constitution `never use X` / `only use X for Y` rule (added KPR-102, motivated by KPR-97) |
+
+If you encounter a new engine-handled behavior the audit didn't catch, append a row to the Step 11 registry in `SKILL.md`. The registry is operator-extensible by design.
 
 ## Cadence
 
