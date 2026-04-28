@@ -487,7 +487,18 @@ export async function writeConstitutionAnchor(
     }
     const idx = before.indexOf(block);
     const heading = title ? `### ${title}\n\n` : "";
-    const replacement = `<a id="${anchor}"></a>\n${heading}${fragmentText.trim()}\n`;
+    // KPR-106: defensive guard — frame fragment files should NOT contain
+    // anchor tags; the engine emits them. If the author included a leading
+    // `<a id="<same-anchor>"></a>` (with optional surrounding whitespace), strip
+    // it before prepending the engine-emitted tag. Without this guard the
+    // post-write document contains two tags for the same id, which throws in
+    // `collectAnchorSet` during audit and surfaces as a spurious
+    // `constitution-anchor-missing` finding.
+    const leadingAnchorRe = new RegExp(
+      `^\\s*<a\\s+id\\s*=\\s*"${escapeRe(anchor)}"\\s*(?:/?>\\s*</a>|/>|>)\\s*\\n?`,
+    );
+    const cleanedFragment = fragmentText.replace(leadingAnchorRe, "");
+    const replacement = `<a id="${anchor}"></a>\n${heading}${cleanedFragment.trim()}\n`;
     updated = before.slice(0, idx) + replacement + before.slice(idx + block.length);
   } else {
     if (!targetAnchor) {
