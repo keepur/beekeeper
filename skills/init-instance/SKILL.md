@@ -88,7 +88,82 @@ The TypeScript module at `src/init/detect-instance-state.ts` is the single sourc
 
 ## Phase 1 — Discover (operator interview)
 
-[FILLED IN BY TASK 6]
+You open a structured conversation with the operator. The interview produces three outputs, written in memory only at this phase (no Mongo writes, no filesystem writes):
+
+1. **Section 2 raw notes** — operator's answers to the interview questions, ready to be drafted into constitution Section 2 prose in Phase 2.
+2. **CoS shaping notes** — operator's preferences about how the CoS should behave: voice/tone, working hours, escalation tolerance, how proactive vs reactive she should be, what topics route to operator vs handle autonomously.
+3. **Initial agents the operator describes** — names + role sketches. NOT provisioned in Phase 4 (per non-goals); written to the handoff memory record so CoS knows what the operator wants to spin up next.
+
+### Interview script
+
+Ask the questions below. Where the frame supplies a default (and the operator can accept "use the frame default"), say so explicitly so the operator knows what they're agreeing to.
+
+#### 1. Operator identity and authority *(operator-specific; no frame default)*
+
+- Who are you? (name, role, pronouns)
+- Are you the sole authority for this instance, or is authority distributed?
+- If distributed: who else has approval authority and over what scope?
+
+#### 2. Company / operation context *(operator-specific)*
+
+- What does this instance support? (the company, the team, the operation it runs)
+- One-paragraph "what we do" — draft a candidate, operator edits.
+- Industry, scale, customer model (B2B / B2C / internal / mixed).
+
+#### 3. Team structure *(operator-specific)*
+
+- Who's on the human team? (names, roles, pronouns, email address pattern)
+- Reporting structure — flat, hierarchical, hybrid?
+- Any human team members the agents should know to escalate to or coordinate with?
+
+#### 4. Communication norms *(operator-specific; some frame defaults to confirm)*
+
+- Slack channel conventions (e.g., `#agent-<name>`, `#team`, `#announcements`).
+- Email norms — agents send from their own addresses (frame default per `hive-baseline` agents-use-own-name) or ghost-write as the operator? Confirm frame default unless operator has a specific reason to override.
+- Response cadence expectation — agents respond immediately, batched, business hours only?
+
+#### 5. Approval delegation *(operator-specific; frame supplies the shape, operator fills the values)*
+
+- Who can approve customer-facing comms? (frame default: requester within their authority; operator confirms or restricts).
+- What's reserved for the operator (you) vs delegable to a manager (Corey-equivalent, or N/A for this operation)?
+- Pricing-outside-range, irreversible company-scale decisions — frame default reserves these to operator; confirm.
+
+#### 6. Working environment *(operator-specific)*
+
+- Timezone(s) — primary operator timezone, team timezones if relevant.
+- Working hours — when should agents default to "ask before doing"?
+- Holidays / blackout windows — anything baseline?
+
+#### 7. Chief-of-Staff shaping *(CoS-specific; frame supplies role/tool defaults, operator fills voice/scope)*
+
+- Name for the CoS (default: `chief-of-staff` agent ID; display name operator's choice).
+- Voice/tone — formal, casual, dry, warm?
+- How proactive — wait for operator to ask, or surface signals unprompted?
+- What topics route to operator immediately vs handle autonomously? (frame supplies a default split — high-stakes / pricing / customer-facing-irreversible to operator; low-stakes ops / routing / scheduling autonomous.)
+- Memory tone — should CoS write memory in operator's voice, in CoS's voice, or neutral third-person?
+
+#### 8. Initial agents the operator wants spun up next *(NOT provisioned; written to CoS handoff memory)*
+
+- Open-ended: "if you could spin up a few agents to handle specific roles, what would they be?"
+- Capture names + role sketches but do NOT validate role→tool mappings here. CoS does that work post-init using the frame's role→tool registry.
+
+### Conversational flow
+
+The script is a guide, not a strict order. Read the situation conversationally — if the operator volunteers Section 4 content while answering Section 2, roll with it and circle back to anything missing at the end. Don't drill the operator through eight numbered sections in order; let the conversation flow and check off sections as you cover them.
+
+### What you read from the frame vs ask the operator
+
+| Topic | Source |
+|---|---|
+| Constitution Section 1 (Authority, Hard Limits, Risk Levels, etc.) | Frame (`hive-baseline`) — verbatim |
+| Universal-9 coreServers baseline | Frame |
+| 5-line per-agent prompt template | Frame |
+| Role→tool registry (which MCPs each archetype gets) | Frame |
+| Memory tier discipline (hot ≤ ~12, no point-in-time, no meta) | Frame |
+| Approval delegation **structure** (who-approves-what shape) | Frame |
+| Approval delegation **values** (which roles map to which scopes for THIS operator) | Operator interview |
+| Constitution Section 2 (team, comms, environment, ops norms) | Operator interview |
+| CoS voice/scope/proactivity | Operator interview |
 
 ## Phase 2 — Propose (drafts to operator)
 
