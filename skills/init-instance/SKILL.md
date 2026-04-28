@@ -167,7 +167,43 @@ The script is a guide, not a strict order. Read the situation conversationally �
 
 ## Phase 2 — Propose (drafts to operator)
 
-[FILLED IN BY TASK 7]
+You produce three drafts and show them to the operator in one consolidated proposal — mirroring `tune-instance` Phase 2's numbered-findings format, but smaller: three macro-items here instead of dozens. Phase 2 still mutates nothing; the drafts live in the conversation only.
+
+### Draft 1 — Constitution Section 2 draft
+
+Markdown, written in the structure the frame anchors expect (team, comms, approval delegation, working environment). Operator-readable. Draft in the operator's voice based on Phase 1 notes, but sign the draft as "from Beekeeper, awaiting your approval." Aim for prose the operator could publish as-is — not bullet-list scaffolding the CoS would later have to flesh out.
+
+The draft must populate the Section 2 anchor pair (`<!-- section-2:start -->` ... `<!-- section-2:end -->`) introduced by the `hive-baseline` frame in Phase 4 step 4a. Don't fabricate other anchors — Section 2's shape is operator prose, not declarative config.
+
+### Draft 2 — Frame application plan
+
+Which frame, with what selectors. For v1 this is just `hive-baseline` with `agents: ["*"]` (which at init time matches CoS only, since CoS is the only agent — frame coverage extends naturally as CoS adds agents post-init via re-apply, per the frames spec section on Wildcard agent selectors). If KPR-86 has shipped additional frames the operator wants to layer (e.g., a `dodi-ops` frame), surface them here and let the operator opt in or out per-frame.
+
+State the plan as a concrete shell-equivalent invocation the operator can read:
+
+```
+beekeeper frame apply hive-baseline <instance-id>
+```
+
+Don't show the full manifest — just the frame name, version (if known), and which assets it claims (Section 1 anchors, role→tool registry, universal-9 coreServers, 5-line prompt template).
+
+### Draft 3 — CoS profile draft
+
+Soul + systemPrompt + coreServers + initial memory seed. Each component in full so the operator can edit it inline:
+
+- **Soul** — drafted from operator's voice/tone notes (Phase 1 §7). Short paragraph that captures who the CoS is, not just what she does.
+- **systemPrompt** — 5-line role-spec template from the frame, filled with operator's CoS-shaping notes:
+  - Identity (who am I)
+  - Scope (what I own)
+  - Boundary (what I don't own)
+  - Tools (the universal-9 + any role-specific extras)
+  - Guardrail (one sentence on operator-only escalations)
+- **coreServers** — universal-9 baseline from the frame, no role-specific extras unless `hive-baseline` ships them in a CoS-specific clause. If the operator volunteered "she'll need to do X," capture it but don't add the tool — let CoS request it post-init via Beekeeper.
+- **Initial memory seed** — structured hot-tier records carrying operator identity, team roster, comms norms, approval delegation values; the structured form of Phase 1 interview output. This is what makes CoS "pre-tuned" on her first conversation. Show the operator the record titles + first lines of content; they don't need to read every byte of every record.
+
+### Single consolidated proposal
+
+Emit all three drafts in one message numbered as `D1` / `D2` / `D3`. Each draft shown in full. Operator can request edits per-draft (`"D1 paragraph 3 needs softer language"`, `"D3 systemPrompt is too long"`). Don't drip — give the full picture, then take the response.
 
 ## Phase 3 — Operator review
 
