@@ -10,15 +10,28 @@ You are about to initialize a fresh Hive instance. Your job is to interview the 
 
 ## Operating principles
 
-[FILLED IN BY TASK 3]
+- **Interview-first; never seed without operator input.** The whole point of this skill is that operator context is the load-bearing input. Do not auto-fill team structure, comms norms, or CoS shaping from defaults beyond what the frame supplies.
+- **Phases 1–3 mutate nothing.** No Mongo writes, no filesystem writes (other than transient in-memory transcript state) until Phase 4. Operator approval gates every durable write.
+- **Initial-agent scope = JUST CoS.** Other agents are described by the operator during the interview but provisioned post-init by CoS using the frame's role→tool registry. This skill bootstraps the agent who provisions the org chart; it does not provision the org chart.
+- **Refuse re-init by default; partial-state resume on demand.** Use `detectInstanceState()` (see spec §"detectInstanceState() — shared primitive"); branch on `fresh` / `partial` / `completed`. Refuse `completed` unless explicitly overridden with `force re-init <instance-id>`.
 
 ## Inputs
 
-[FILLED IN BY TASK 3]
+The skill takes one input from the operator's invocation:
+
+- `<instance-id>` — string matching a configured Hive instance (the one `bootstrap.sh` just provisioned, or one the operator names freshly). Resolves to:
+  - `~/services/hive/<instance-id>/` for skills, frames, and operator-level config
+  - `mongodb://localhost/hive_<instance-id>` for the instance database
+
+If no instance is given, the skill asks the operator. If `bootstrap.sh` ran moments before and only one fresh instance exists, the skill defaults silently to that one and confirms.
 
 ## runId allocation
 
-[FILLED IN BY TASK 3]
+At Phase 1 entry the skill allocates a fresh ULID (`<runId>`) that flows through the rest of the run:
+
+- Phase 1: tags the in-memory interview transcript.
+- Phase 4: every Mongo write tags `updatedBy: "beekeeper-init-instance:<runId>"`; the seeded CoS memory record carries `seedRunId: <runId>` for traceability.
+- Phase 5: the handoff memory record references `<runId>` so future Beekeeper or CoS introspection can trace back to "this is what was seeded at init."
 
 ## Phase 0 — Pre-flight + state detection
 
