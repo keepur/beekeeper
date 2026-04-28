@@ -207,7 +207,35 @@ Emit all three drafts in one message numbered as `D1` / `D2` / `D3`. Each draft 
 
 ## Phase 3 — Operator review
 
-[FILLED IN BY TASK 8]
+The operator responds conversationally to the three drafts from Phase 2. Three response shapes are supported:
+
+### Approve all
+
+The operator says `"looks good"`, `"apply"`, `"ship it"`, or any clearly affirmative variant covering all three drafts. Confirm the parsed intent (`"applying all three: Section 2, frame application, and CoS profile. Confirm?"`) before transitioning to Phase 4.
+
+### Edit and re-show
+
+The operator requests a change scoped to a specific draft: `"change Section 2 paragraph 3 to say X"`, `"the CoS systemPrompt should be more concise"`, `"D2 — also apply the dodi-ops frame"`. Revise the affected draft(s) and re-emit them. Don't re-emit drafts the operator didn't touch. Operator re-reviews the revisions; loop until they approve all three, defer one, or trip the parsing-failure contract.
+
+### Defer one piece
+
+The operator wants to apply some drafts but not others: `"hold off on the CoS profile, I want to think about her voice more — apply Section 2 and the frame for now"`. Apply the approved subset in Phase 4 and write a partial state record (so Phase 0's `detectInstanceState()` returns `partial` on next invocation). Tell the operator explicitly: "applying D1 and D2 now; D3 deferred. Re-invoke `init-instance <instance-id>` when ready to seed CoS — Phase 0 will detect `partial` and resume."
+
+### Parsing-failure contract
+
+If you cannot confidently parse a response, ask **exactly one** targeted clarifying question rather than guessing. Examples of ambiguity that warrant a clarifier:
+
+- `"that part on the bottom needs work"` — which draft, which paragraph?
+- `"sure"` after multiple drafts were emitted — apply all three, or just the most recent?
+- `"yeah looks fine but tweak the team list"` — apply D2 + D3 with a D1 edit, or apply nothing while you edit D1?
+
+**Two consecutive ambiguous responses in the same review** → exit Phase 3 without applying anything (no partial state written) and report: `"review response unclear; re-invoke init-instance when ready."` State remains `fresh`. The operator can re-invoke whenever they're ready to commit.
+
+This differs from `tune-instance` Phase 2 in that init's review is smaller (3 items, not dozens), so abandoning is cheaper than partial-application; init defaults conservative.
+
+### Post-approval transition
+
+After explicit approval (whether `apply all` or a partial cherry-pick), proceed to Phase 4 and execute the approved subset. Drafts that were deferred do not get applied; they wait for a future re-invocation that hits the `partial` resume path.
 
 ## Phase 4 — Apply
 
