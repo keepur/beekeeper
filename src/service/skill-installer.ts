@@ -8,6 +8,16 @@ const log = createLogger("skill-installer");
 const SKILL_NAME = "tune-instance";
 
 /**
+ * Bundled skills shipped by this Beekeeper install. Each name corresponds to
+ * a directory under `<repo>/skills/<name>/SKILL.md`. The postinstall step
+ * symlinks every entry into `~/.claude/skills/<name>/`.
+ *
+ * Add new bundled skills here when authoring them under `skills/<name>/`.
+ */
+export const BUNDLED_SKILLS = ["tune-instance", "init-instance"] as const;
+export type BundledSkillName = (typeof BUNDLED_SKILLS)[number];
+
+/**
  * Resolve the absolute path to the bundled skill directory inside this
  * beekeeper install. At runtime `import.meta.dirname` is `<repo>/dist/service`,
  * so `../../skills/<name>` walks back to `<repo>/skills/<name>`. The same
@@ -45,7 +55,7 @@ export function installSkillSymlink(
   skillName: string = SKILL_NAME,
   baseDir?: string,
 ): {
-  status: "created" | "already-current" | "replaced" | "blocked-real-dir";
+  status: "created" | "already-current" | "replaced" | "blocked-real-dir" | "failed";
   linkPath: string;
   targetPath: string;
   detail?: string;
@@ -142,4 +152,57 @@ export function removeSkillSymlink(
   }
   unlinkSync(linkPath);
   return { status: "removed", linkPath };
+}
+
+export interface SkillInstallReport {
+  skill: BundledSkillName;
+  result: ReturnType<typeof installSkillSymlink>;
+}
+
+export interface SkillRemoveReport {
+  skill: BundledSkillName;
+  result: ReturnType<typeof removeSkillSymlink>;
+}
+
+/**
+ * Install symlinks for every bundled skill. Best-effort iteration: a missing
+ * bundled skill (e.g., a packaging issue that drops one directory) does NOT
+ * prevent the others from being installed. Each skill's individual result is
+ * captured in the returned array; callers (e.g. `beekeeper install`) iterate
+ * to print per-skill status.
+ */
+export function installAllSkillSymlinks(baseDir?: string): SkillInstallReport[] {
+  const reports: SkillInstallReport[] = [];
+  for (const skill of BUNDLED_SKILLS) {
+    try {
+      reports.push({ skill, result: installSkillSymlink(skill, baseDir) });
+    } catch (err) {
+      log.warn("Skill install failed", {
+        skill,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      reports.push({
+        skill,
+        result: {
+          status: "failed",
+          linkPath: resolveLinkPath(skill, baseDir),
+          targetPath: resolveBundledSkillPath(skill),
+          detail: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+  return reports;
+}
+
+/**
+ * Remove symlinks for every bundled skill. Same best-effort posture as
+ * `installAllSkillSymlinks`; a real directory at any link path is preserved
+ * (operator-fork protection). `not-present` is silent.
+ */
+export function removeAllSkillSymlinks(baseDir?: string): SkillRemoveReport[] {
+  return BUNDLED_SKILLS.map((skill) => ({
+    skill,
+    result: removeSkillSymlink(skill, baseDir),
+  }));
 }

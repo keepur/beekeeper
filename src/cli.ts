@@ -142,6 +142,20 @@ switch (command) {
     if (frameExit) process.exit(frameExit);
     break;
   }
+  case "init-state": {
+    let initStateExit = 0;
+    try {
+      const { runInitStateCli } = await import("./init/cli.js");
+      const result = await runInitStateCli(process.argv.slice(3));
+      initStateExit = result.exitCode;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`beekeeper init-state failed: ${msg}`);
+      initStateExit = 1;
+    }
+    if (initStateExit) process.exit(initStateExit);
+    break;
+  }
   case "pipeline-tick": {
     const { loadConfig } = await import("./config.js");
     const { runPipelineCli } = await import("./pipeline/cli.js");
