@@ -100,8 +100,11 @@ The skill walks the 9-step checklist defined in the playbook draft (`/tmp/tune-i
 7. **Skill availability across instances** — customer-space skills override seeds + plugins; check the per-instance `skills/` directory matches expectation.
 8. **Vestigial cron cleanup** — crons whose skill no longer exists AND whose work has been centralized elsewhere (e.g., aggregated into Mokie's morning-briefing) should be removed.
 9. **Naming/identity audit** — agent directories use one convention (role-id OR agent-name, not mixed); Slack channels follow `#agent-<name>`; email addresses follow `<firstname>@<domain>` for human-fronted agents; agents without their own mailbox don't have email-send tooling.
+10. **Frame integrity** (added with KPR-83) — flag inconsistencies between what `~/services/hive/<instance-id>/frames/applied.json` says is applied and what's actually present in the instance. Resolution path is to re-apply or remove the frame, not hand-edit. Frame-naive instances skip this step entirely.
+11. **Engine-superseded prompt instructions** (added KPR-102) — per-agent prompt instructions that the engine already handles automatically. Detection scans `agent_definitions.systemPrompt` against an in-skill registry of engine-handled behaviors (initial seed: 5 entries covering Slack prefix auto-prepending, markdown→mrkdwn auto-conversion, oversized-message auto-split, auto-threading, error-message auto-wrapping). Findings surface under prefix `E`. Frame-aware (records with `replacedClaimFrom` skipped). Distinct from Step 3 DRY pass: this step finds phrases that contradict engine reality regardless of how many agents have them; a single-agent stale instruction still files a finding.
+12. **Seed-tool-claim vs. constitution-rule mismatch** (added KPR-102) — when the constitution carries `"never use X"` or `"only use X for Y"` rules, scan agent prompts AND seed YAMLs for tool advertisements that name X without the scoping caveat. Findings surface under prefix `R`. Frame-aware. Distinct from Step 3 tool/claim audit: that step checks prompt vs. coreServers; this one checks prompt vs. constitution. KPR-97 root cause: Wyatt's seed advertised `Slack MCP — send messages` while the constitution says `"Never use Slack MCP tools to reply to the message you're currently handling"`.
 
-The full step-by-step prose, the example queries, and the per-step expected outputs live in `SKILL.md`.
+The full step-by-step prose, the example queries, the per-step expected outputs, and the engine-handled-behaviors registry (for Step 11) live in `SKILL.md`.
 
 ### Frame-awareness (KPR-83 dependency)
 
@@ -188,7 +191,7 @@ Write a session summary to `~/services/hive/<instance-id>/tune-runs/<runId>.md`:
 - `<runId>` is the same ULID allocated at Phase 1 entry (see "runId allocation" above); the file path is the durable handle.
 - Contents:
   - **Top half — markdown**: the Phase 1 report verbatim, the operator's selections (applied / deferred / skipped per finding), the Phase 3 results (writes that succeeded vs. failed vs. blocked-by-frame), and any operator notes the skill captured during the conversation. This is operator-readable.
-  - **Bottom half — JSON block** (fenced ```json): a machine-parseable selections record with each finding's stable signature (hash of `{step, target, proposed-action}`), category prefix (C/B/P/T/M/K/S/N/F), disposition (`applied` / `deferred` / `skipped` / `blocked-by-frame` / `failed`), and (for deferred items) the reason. The next run reads this block to know which prior findings to re-surface.
+  - **Bottom half — JSON block** (fenced ```json): a machine-parseable selections record with each finding's stable signature (hash of `{step, target, proposed-action}`), category prefix (C/B/P/T/M/K/S/N/F/E/R), disposition (`applied` / `deferred` / `skipped` / `blocked-by-frame` / `failed`), and (for deferred items) the reason. The next run reads this block to know which prior findings to re-surface.
 
 A separate aggregated file `~/services/hive/<instance-id>/tune-runs/_index.md` lists all runs in reverse-chronological order with one-line summaries (date, runId, applied-count / deferred-count). Updated atomically per run (read-modify-write within a single Phase 4 step).
 
@@ -210,6 +213,8 @@ A separate aggregated file `~/services/hive/<instance-id>/tune-runs/_index.md` l
   - Step 7 (skill availability): `install-skill`, `remove-skill`
   - Step 9 (naming/identity): `rename` (with payload `{kind: "agent-dir" | "slack-channel" | "email-address", from, to}`)
   - Step 10 (frame integrity, post-KPR-83): `reapply-frame`, `remove-frame`
+  - Step 11 (engine-superseded, post-KPR-102): `remove-instruction`, `rewrite`
+  - Step 12 (rule-mismatch, post-KPR-102): `rewrite`, `remove-tool`, `add-caveat`
 
   If a finding cannot be expressed with the listed verbs, the skill flags it as `verb: "manual"` and writes the prose-only proposal — these don't get stable signatures and can't carry forward as deferred (operator must re-evaluate next run). Plan-stage decides whether to add new verbs or accept manual-only handling.
 
@@ -258,7 +263,7 @@ The constitution may be shared across instances (if it lives in the engine repo)
 - [ ] Skill exists at `~/github/beekeeper/skills/tune-instance/SKILL.md` with frontmatter `name`, `description`, `agents: [beekeeper]`, `schedule: every 2 weeks`
 - [ ] Beekeeper installer (or postinstall) ensures the skill is reachable at `~/.claude/skills/tune-instance/` so existing skill auto-discovery picks it up
 - [ ] Phase 1 audit covers all 9 steps from the playbook draft + the new "frame integrity" category (the latter active only when KPR-83's primitives are present)
-- [ ] Phase 2 emits a single consolidated report with numbered findings (per-category prefix: `C/B/P/T/M/K/S/N/F` for constitution / business-context / per-agent-prompt / tool-matrix (coreServers baseline) / memory / cron→skill / skill-availability / naming-identity / frame-integrity)
+- [ ] Phase 2 emits a single consolidated report with numbered findings (per-category prefix: `C/B/P/T/M/K/S/N/F/E/R` for constitution / business-context / per-agent-prompt / tool-matrix (coreServers baseline) / memory / cron→skill / skill-availability / naming-identity / frame-integrity / engine-superseded / rule-mismatch)
 - [ ] Phase 2 supports cherry-pick selection (operator response parsed conversationally; "apply all" / "apply X1, X3" / "defer Y2" / "skip Z4" all work); confirmation prompt before Phase 3 begins
 - [ ] Phase 2 parsing-failure contract: ambiguous operator response triggers exactly one targeted clarifying question; two consecutive ambiguous responses cause the skill to abandon Phase 3, write a "no apply, parsing failed" findings doc, and exit
 - [ ] Phase 3 applies only operator-approved findings; un-approved findings persist as "deferred" or "skipped" in the run's findings doc
@@ -271,6 +276,10 @@ The constitution may be shared across instances (if it lives in the engine repo)
 - [ ] Deferred-finding signatures use normalized inputs (agentId, content-anchor for sections, Mongo `_id` for memory records, taskId for crons, fixed action-verb vocabulary) so legitimate target evolution doesn't silently break deferral continuity
 - [ ] Next-run idempotency: a re-run immediately after Phase 3 apply produces no new structural findings (content findings excepted)
 - [ ] Anti-patterns enforced: no blanket constitution rewrites without specific drift, no bulk memory deletion without sample, no public scope corrections, no "rebuild the agent" from scratch
+- [ ] Phase 1 Step 11 (engine-superseded, KPR-102) ships with at least 3 registry entries seeded; registry is operator-extensible (markdown table format)
+- [ ] Phase 1 Step 12 (rule-mismatch, KPR-102) detects constitution `"never use X"` / `"only use X for Y"` patterns and cross-references against agent prompts AND seed YAMLs; records with `replacedClaimFrom` are frame-aware skipped
+- [ ] Both new categories surface findings via the existing cherry-pick gate (prefix `E`/`R`); both feed the existing Phase 4 signature contract via the verb-vocabulary additions
+- [ ] Re-running the audit against pre-2026-04-27 dodi state would catch KPR-97 (regression: the `slack-prefix-double` registry entry matches all five affected agents; the rule-mismatch detector matches Wyatt's pre-fix seed)
 
 ## Coordination with sibling tickets
 
@@ -279,6 +288,8 @@ The constitution may be shared across instances (if it lives in the engine repo)
 - **KPR-79** (engine team-API) — already Ready. The team summary auto-injection from KPR-79 is one of the things KPR-72 audits ("does business-context still have the team table? — drop it; the team API serves it").
 - **KPR-83** (Frames) — **dependency**. Implementation of KPR-72 waits until KPR-83 lands; spec + plan can land now with frame-awareness baked in.
 - **KPR-96** (pipeline-tick Phase 2) — already Ready. No direct dependency; both are Beekeeper concerns.
+- **KPR-97** (Slack-MCP self-echo bug — root cause analysis) — motivating bug for KPR-102's audit additions. KPR-102 codifies the two new audit categories (engine-superseded, rule-mismatch) that would have caught the bug statically.
+- **KPR-102** (tune-instance audit additions) — extends Phase 1 with Steps 11 (engine-superseded) and 12 (rule-mismatch); extends Phase 2 prefix table with `E` and `R`; extends Phase 4 verb vocabulary.
 
 ## Open design questions
 
