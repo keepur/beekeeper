@@ -154,6 +154,60 @@ Flag inconsistencies between what `~/services/hive/<instance-id>/frames/applied.
 
 Frame-naive instances (no `applied.json`, no anchored sections, no `replacedClaimFrom` fields) skip this step entirely.
 
+### 11. Engine-superseded prompt instructions
+
+For each agent in `db.agent_definitions.find({})`, scan the `systemPrompt` field against the **engine-handled-behaviors registry** below. A match means the agent's prompt instructs it to do something the Hive engine already handles automatically — the instruction is at best stale (wasted context bytes) and at worst actively harmful (double-prefix, double-formatting, double-routing).
+
+**Why this is different from Step 3 DRY pass:** Step 3 finds *identical* phrases across agents and proposes a constitution candidate. Step 11 finds phrases that contradict engine reality, regardless of how many agents have them. A single agent with a stale instruction is still a finding here; not a finding for Step 3.
+
+**Detection process:**
+
+1. For each agent, extract the `systemPrompt` text.
+2. For each registry entry below, run the `stale-instruction pattern` against the prompt.
+3. Match → file finding under prefix `E`. Surface the matched sentence verbatim, the registry entry's `engine source` citation, and the proposed remediation.
+4. Re-verify the registry entry's `engine source` line range against `~/github/hive` main before treating the finding as actionable. Line numbers drift; function names + the canonical surrounding code stay stable.
+
+**Frame-awareness:** Records with `replacedClaimFrom: <frame-id>` are skipped — the frame is the authoritative claim, not drift.
+
+#### Engine-handled-behaviors registry
+
+The registry is a markdown table the operator extends as new engine-handled behaviors surface during real-world audit runs. Pipe characters inside regex are escaped as `\|` so the markdown table renders.
+
+**Apply all stale-instruction patterns case-insensitively.** Engine-source-citations are exact paths; regex matches are intentionally loose and operator-confirmed at the cherry-pick gate.
+
+| id | engine behavior | engine source | stale-instruction pattern (loose) | proposed remediation |
+|---|---|---|---|---|
+| `slack-prefix-double` | Auto-prepends `<icon> *<agent-name>*: ` to every outgoing Slack message. | `~/github/hive/src/channels/slack-adapter.ts:144-145` (`SlackAdapter.deliver()`) | `(prefix\|start).{0,30}(every\|all\|each).{0,40}(slack\|message\|reply).{0,80}(:[a-z_]+:\|emoji\|\*\*[A-Z][a-z]+\*\*)` | `remove-instruction` — the engine already does it. |
+| `slack-mrkdwn-bold-double` | Auto-converts Markdown (`**bold**`, headers, `[text](url)`, `~~strike~~`) to Slack mrkdwn. | `~/github/hive/src/slack/response-formatter.ts:5-22` (`markdownToMrkdwn`) | `(slack\|mrkdwn).{0,40}(use\|format\|write).{0,40}(\*[^*]\|single asterisk\|not.*\*\*\|<url\\\|text>)` | `remove-instruction` — write standard Markdown. |
+| `slack-long-message-split` | Auto-splits over-limit messages and falls back to file upload. | `~/github/hive/src/slack/slack-gateway.ts:460-526` (`postSplit` + `postAsFile`) | `(keep\|limit\|stay under).{0,40}(\d{3,5}\|3000\|2000\|4000).{0,40}(char\|character\|byte).{0,80}(slack\|delivery\|message limit)` | `remove-instruction` — the engine handles transport limits. Excludes clarity-driven brevity instructions. |
+| `slack-thread-routing` | Replies auto-thread under the original `thread_ts` — the channel adapter sets it, not the agent. | `~/github/hive/src/channels/slack-adapter.ts:130-149` (the `replyThread` logic) | `(set\|use\|pass\|include).{0,40}(thread_ts\|threadTs).{0,80}(reply\|respond)` | `remove-instruction` — return text; the engine threads. |
+| `slack-error-formatting` | Errors are auto-wrapped via `formatError`. | `~/github/hive/src/slack/response-formatter.ts:32-34` (`formatError`) | `(wrap\|format\|prefix\|prepend).{0,40}(error\|failure\|exception).{0,30}(slack\|message\|delivery\|response\|outbound).{0,40}(with\|as\|like)` (only flag when the instruction is clearly about Slack-delivery formatting; generic error-handling guidance is not a finding) | `remove-instruction` — return the raw error; the engine wraps it. |
+
+**Common findings (seeded from KPR-97 root-cause):** five dodi agents (jessica, river, sige, milo, jasper) carried `"Always prefix every Slack message with :emoji: **Name**:"` — every one matches the `slack-prefix-double` pattern. Re-running this audit step against the pre-2026-04-27 dodi state would catch all five.
+
+### 12. Seed-tool-claim vs. constitution-rule mismatch
+
+The constitution carries declarative rules (Step 1 already parses it for drift). For each rule with a "never use X" or "only use X for Y" or "scoped to Z only" pattern, scan agent prompts and seed YAMLs for tool advertisements that name X without the scoping caveat.
+
+**Why this is different from Step 3 (tool/claim audit):** Step 3 checks *prompt vs. coreServers* (does the agent claim a tool it doesn't have?). Step 12 checks *prompt vs. constitution* (does the agent advertise a tool in a way that violates a constitutional rule?). Different direction, different finding population.
+
+**Detection process:**
+
+1. **Constitution scan.** Pull the rendered constitution (same source as Step 1). Extract rules matching:
+   - `(never|don't|do not).{0,40}use\s+([A-Z][\w-]+(?:\s+MCP)?)` — captures "never use X" rules.
+   - `(only|just).{0,40}use\s+([A-Z][\w-]+(?:\s+MCP)?).{0,80}(for|to|when)` — captures "only use X for Y" rules.
+   - Plus the canonical "Message Delivery" section anchor (`templates/constitution-bootstrap.md.tpl:107-121` in the engine repo) — parsed by header text, not line range, since template line numbers drift.
+2. **Per-agent claim scan.** For each rule extracted, scan each agent's `systemPrompt` AND the agent's seed YAML if accessible (typically at `<instance>/plugins/<plugin>/agent-seeds/<agent>.yaml` or in the engine repo at `~/github/hive/plugins/<plugin>/agent-seeds/`):
+   - Find any line that names the prohibited tool (e.g., `Slack MCP`, `slack_send_message`, `chat_postMessage`).
+   - Check whether the same paragraph (or the next 2 sentences) restate the constitutional caveat (`"never to reply"`, `"outbound only"`, `"do not use to reply to the conversation you're currently handling"`).
+   - If the tool is named without the caveat → finding under prefix `R`. Surface the matched line verbatim, the constitution rule it violates, and the two-path remediation: (a) `rewrite` the prompt/seed to include the caveat, OR (b) `remove-tool` if the agent doesn't actually need the tool.
+
+**Frame-awareness:** Records with `replacedClaimFrom: <frame-id>` are skipped — the frame is the authoritative claim, not drift.
+
+**Conservative matching note:** the patterns are deliberately loose to catch more drift, but that means false positives are possible. Each finding ships the matched sentence + the constitution rule + the proposed remediation; the operator decides at the cherry-pick gate. False-positive rate is acceptable because the cherry-pick gate is the safety net, not the regex.
+
+**Concrete KPR-97 trace:** the constitution rule `"Never use Slack MCP tools (slack_send_message, chat_postMessage, chat_update, etc.) to reply to the message you're currently handling"` matches pattern 1 (`(never).{0,40}use\s+(Slack MCP)`). Wyatt's pre-fix seed line `Slack MCP — search messages, read channels, send messages` (at `plugins/dodi/agent-seeds/product-specialist.yaml:87` in the engine repo, commit `ec2a293^`) names `Slack MCP` and `send messages` without the caveat → finding `R1` proposed remediation `rewrite` (add the caveat) OR `remove-tool` (remove `slack_send_message` from the seed if the agent doesn't post cross-channel).
+
 ## Frame-awareness
 
 When KPR-83 ships, frames apply config overlays via three primitives:
@@ -184,6 +238,8 @@ After the audit, the skill emits a single consolidated report to the operator (n
 - `S` = skill availability
 - `N` = naming-identity
 - `F` = frame integrity
+- `E` = engine-superseded prompt instructions
+- `R` = seed-tool-claim vs. constitution-rule mismatch
 
 Example report shape:
 
@@ -209,6 +265,14 @@ MEMORY HYGIENE (12 findings)
 [plus business-context (B), coreServers baseline (T), cron→skill (K), skill availability (S), naming/identity (N)]
 
 FRAME INTEGRITY (0 findings)  [or N if frames applied]
+
+ENGINE-SUPERSEDED (5 findings)
+  E1. jasper: "Always prefix every Slack message with :emoji: **Name**:" — engine already prepends (slack-prefix-double, slack-adapter.ts:144-145) — propose: remove instruction
+  E2. milo: same pattern — propose: remove instruction
+  ...
+
+RULE-MISMATCH (1 finding)
+  R1. wyatt seed (product-specialist.yaml:87): "Slack MCP — send messages" w/o no-self-reply caveat (constitution Message Delivery rule) — propose: rewrite (add caveat) OR remove-tool
 
 DEFERRED FROM PREVIOUS RUN (3 findings)
   C2 (deferred 2026-04-12 — operator declined; recheck if still applicable)
@@ -315,6 +379,8 @@ Signature inputs are **normalized** to survive legitimate operator activity that
 - Step 7 (skill availability): `install-skill`, `remove-skill`
 - Step 9 (naming/identity): `rename` with payload `{kind: "agent-dir" | "slack-channel" | "email-address", from, to}`
 - Step 10 (frame integrity, post-KPR-83): `reapply-frame`, `remove-frame`
+- Step 11 (engine-superseded, post-KPR-102): `remove-instruction`, `rewrite`
+- Step 12 (rule-mismatch, post-KPR-102): `rewrite`, `remove-tool`, `add-caveat`
 
 **Manual-verb fallback**: findings that can't be expressed with the listed verbs flag as `verb: "manual"` and write a prose-only proposal — these don't get stable signatures and can't carry forward as deferred (operator must re-evaluate next run). Plan-stage decides whether to add new verbs or accept manual-only handling.
 
@@ -369,6 +435,15 @@ Example JSON block at the bottom of `<runId>.md`:
       "signature": "4e7a1b9c8f2d",
       "disposition": "deferred",
       "reason": "operator deferred"
+    },
+    {
+      "id": "E1",
+      "category": "engine-superseded",
+      "step": "step-11-engine-superseded",
+      "target": "jasper",
+      "proposedAction": { "verb": "remove-instruction", "payload": { "registryEntry": "slack-prefix-double" } },
+      "signature": "9d2e7c5f3a1b",
+      "disposition": "applied"
     }
   ]
 }
