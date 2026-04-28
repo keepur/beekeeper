@@ -43,7 +43,7 @@ Walk the checklist below. Take notes in a structured findings doc. Output one co
 
 ### 0. Pre-flight state check
 
-Before running any audit step, verify the target instance has actually been through `init-instance` (KPR-71). Running tune on a fresh or partially-initialized instance produces noisy findings (e.g. "Section 2 missing" — but the right remediation is `hive init`, not a tune fix). Step 0 short-circuits the obvious cases and annotates the report when init isn't fully done.
+Before running any audit step, verify the target instance has actually been through `init-instance` (KPR-71). Running tune on a fresh or partially-initialized instance produces noisy findings (e.g. "Section 2 missing" — but the right remediation is invoking the `init-instance` skill, not a tune fix). Step 0 short-circuits the obvious cases and annotates the report when init isn't fully done.
 
 #### Invocation
 
@@ -67,6 +67,19 @@ This is the same primitive `init-instance` Phase 0 uses (canonical implementatio
 
 If the operator referred to a non-default CoS slug (e.g., `mokie`) in their invocation context, pass `--cos-agent-id <slug>` so detection picks up the right CoS record. Otherwise the default (`chief-of-staff`) is used.
 
+#### Failure handling
+
+If `beekeeper init-state` exits non-zero, prints empty stdout, or produces output that doesn't parse as the JSON shape above, emit to the operator:
+
+```
+Step 0 pre-flight failed: `beekeeper init-state <instance-id>` did not return
+a parseable result. Check that Beekeeper is running, MongoDB is reachable,
+and `<instance-id>` is registered in `~/.beekeeper/beekeeper.yaml`.
+Re-invoke tune-instance once the pre-flight succeeds.
+```
+
+**Exit Phase 1.** Don't proceed with the audit on an unparseable state check — auditing under unknown init state produces unreliable findings.
+
 #### Branches
 
 - **`fresh`** → tune-instance is the wrong tool. Emit to the operator:
@@ -75,8 +88,8 @@ If the operator referred to a non-default CoS slug (e.g., `mokie`) in their invo
   Instance <instance-id> has not been initialized — `init-state` returned `fresh`
   (no Section 2, no frame, no CoS, no handoff memory).
 
-  Run `hive init <instance-id>` (or invoke the `init-instance` skill) first.
-  Re-invoke tune-instance once init completes.
+  Invoke the `init-instance` skill from a Beekeeper conversation for instance
+  `<instance-id>`, then re-invoke tune-instance once init completes.
   ```
 
   **Exit Phase 1.** No findings produced, no report drafted, no Phase 2/3/4 run. Return control to the operator.
