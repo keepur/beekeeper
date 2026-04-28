@@ -21,7 +21,7 @@ The skill resolves the instance from natural-language phrasing. If multiple inst
 
 ## What each phase does
 
-- **Phase 1 — Read-only audit.** Walks the 9 audit steps, collects raw findings, no writes. The operator sees nothing yet.
+- **Phase 1 — Read-only audit.** Walks the 12 audit steps (Steps 1–9 baseline, Step 10 frame integrity, Steps 11–12 KPR-102 additions), collects raw findings, no writes. The operator sees nothing yet.
 - **Phase 2 — Operator review.** Bundles findings into one report, numbered with category prefixes (`C/B/P/T/M/K/S/N/F/E/R`). The operator responds with a cherry-pick selection. The skill confirms the parsed plan before doing anything; an ambiguous response gets one targeted clarifying question, and a second ambiguous response abandons Phase 3 (Phase 4 still runs).
 - **Phase 3 — Apply with consent.** Executes only the findings the operator approved. Each write tags `updatedBy`. Section 1 (Authority, Hard Limits) edits require explicit override unless the change is plain template-drift backfill; ambiguity on a Section 1 finding scopes-out that single finding only, the rest of Phase 3 continues.
 - **Phase 4 — Save findings.** Writes a `<runId>.md` doc to `~/services/hive/<instance-id>/tune-runs/` with the report at the top and a JSON block at the bottom mapping each finding's signature to its disposition (applied / deferred / skipped). Updates `_index.md`. The next run reads this to surface deferred findings under "DEFERRED FROM PREVIOUS RUN".

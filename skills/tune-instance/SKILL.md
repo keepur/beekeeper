@@ -173,13 +173,15 @@ For each agent in `db.agent_definitions.find({})`, scan the `systemPrompt` field
 
 The registry is a markdown table the operator extends as new engine-handled behaviors surface during real-world audit runs. Pipe characters inside regex are escaped as `\|` so the markdown table renders.
 
+**Apply all stale-instruction patterns case-insensitively.** Engine-source-citations are exact paths; regex matches are intentionally loose and operator-confirmed at the cherry-pick gate.
+
 | id | engine behavior | engine source | stale-instruction pattern (loose) | proposed remediation |
 |---|---|---|---|---|
 | `slack-prefix-double` | Auto-prepends `<icon> *<agent-name>*: ` to every outgoing Slack message. | `~/github/hive/src/channels/slack-adapter.ts:144-145` (`SlackAdapter.deliver()`) | `(prefix\|start).{0,30}(every\|all\|each).{0,40}(slack\|message\|reply).{0,80}(:[a-z_]+:\|emoji\|\*\*[A-Z][a-z]+\*\*)` | `remove-instruction` — the engine already does it. |
 | `slack-mrkdwn-bold-double` | Auto-converts Markdown (`**bold**`, headers, `[text](url)`, `~~strike~~`) to Slack mrkdwn. | `~/github/hive/src/slack/response-formatter.ts:5-22` (`markdownToMrkdwn`) | `(slack\|mrkdwn).{0,40}(use\|format\|write).{0,40}(\*[^*]\|single asterisk\|not.*\*\*\|<url\\\|text>)` | `remove-instruction` — write standard Markdown. |
 | `slack-long-message-split` | Auto-splits over-limit messages and falls back to file upload. | `~/github/hive/src/slack/slack-gateway.ts:460-526` (`postSplit` + `postAsFile`) | `(keep\|limit\|stay under).{0,40}(\d{3,5}\|3000\|2000\|4000).{0,40}(char\|character\|byte).{0,80}(slack\|delivery\|message limit)` | `remove-instruction` — the engine handles transport limits. Excludes clarity-driven brevity instructions. |
 | `slack-thread-routing` | Replies auto-thread under the original `thread_ts` — the channel adapter sets it, not the agent. | `~/github/hive/src/channels/slack-adapter.ts:130-149` (the `replyThread` logic) | `(set\|use\|pass\|include).{0,40}(thread_ts\|threadTs).{0,80}(reply\|respond)` | `remove-instruction` — return text; the engine threads. |
-| `slack-error-formatting` | Errors are auto-wrapped via `formatError`. | `~/github/hive/src/slack/response-formatter.ts:32-34` (`formatError`) | `(wrap\|format\|prefix\|prepend).{0,40}(error\|failure\|problem).{0,40}(with\|as\|like)` | `remove-instruction` — return the raw error; the engine wraps it. |
+| `slack-error-formatting` | Errors are auto-wrapped via `formatError`. | `~/github/hive/src/slack/response-formatter.ts:32-34` (`formatError`) | `(wrap\|format\|prefix\|prepend).{0,40}(error\|failure\|exception).{0,30}(slack\|message\|delivery\|response\|outbound).{0,40}(with\|as\|like)` (only flag when the instruction is clearly about Slack-delivery formatting; generic error-handling guidance is not a finding) | `remove-instruction` — return the raw error; the engine wraps it. |
 
 **Common findings (seeded from KPR-97 root-cause):** five dodi agents (jessica, river, sige, milo, jasper) carried `"Always prefix every Slack message with :emoji: **Name**:"` — every one matches the `slack-prefix-double` pattern. Re-running this audit step against the pre-2026-04-27 dodi state would catch all five.
 

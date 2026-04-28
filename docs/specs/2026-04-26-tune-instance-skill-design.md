@@ -262,7 +262,7 @@ The constitution may be shared across instances (if it lives in the engine repo)
 
 - [ ] Skill exists at `~/github/beekeeper/skills/tune-instance/SKILL.md` with frontmatter `name`, `description`, `agents: [beekeeper]`, `schedule: every 2 weeks`
 - [ ] Beekeeper installer (or postinstall) ensures the skill is reachable at `~/.claude/skills/tune-instance/` so existing skill auto-discovery picks it up
-- [ ] Phase 1 audit covers all 9 steps from the playbook draft + the new "frame integrity" category (the latter active only when KPR-83's primitives are present)
+- [ ] Phase 1 audit covers all 12 audit steps (Steps 1–9 baseline from the playbook draft, Step 10 "frame integrity" added with KPR-83, Steps 11–12 "engine-superseded" + "rule-mismatch" added with KPR-102)
 - [ ] Phase 2 emits a single consolidated report with numbered findings (per-category prefix: `C/B/P/T/M/K/S/N/F/E/R` for constitution / business-context / per-agent-prompt / tool-matrix (coreServers baseline) / memory / cron→skill / skill-availability / naming-identity / frame-integrity / engine-superseded / rule-mismatch)
 - [ ] Phase 2 supports cherry-pick selection (operator response parsed conversationally; "apply all" / "apply X1, X3" / "defer Y2" / "skip Z4" all work); confirmation prompt before Phase 3 begins
 - [ ] Phase 2 parsing-failure contract: ambiguous operator response triggers exactly one targeted clarifying question; two consecutive ambiguous responses cause the skill to abandon Phase 3, write a "no apply, parsing failed" findings doc, and exit
