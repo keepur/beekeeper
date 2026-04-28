@@ -270,6 +270,10 @@ export function install(configDir?: string): void {
         console.log(
           `Skill NOT installed (${skill}; real directory at ${result.linkPath}): ${result.detail ?? ""}`,
         );
+      } else if (result.status === "failed") {
+        console.log(
+          `Skill install FAILED (${skill}): ${result.detail ?? "unknown error"} (target ${result.targetPath})`,
+        );
       }
     }
   } catch (err) {

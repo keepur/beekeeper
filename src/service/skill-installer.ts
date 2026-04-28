@@ -55,7 +55,7 @@ export function installSkillSymlink(
   skillName: string = SKILL_NAME,
   baseDir?: string,
 ): {
-  status: "created" | "already-current" | "replaced" | "blocked-real-dir";
+  status: "created" | "already-current" | "replaced" | "blocked-real-dir" | "failed";
   linkPath: string;
   targetPath: string;
   detail?: string;
@@ -184,9 +184,9 @@ export function installAllSkillSymlinks(baseDir?: string): SkillInstallReport[] 
       reports.push({
         skill,
         result: {
-          status: "blocked-real-dir",
-          linkPath: "",
-          targetPath: "",
+          status: "failed",
+          linkPath: resolveLinkPath(skill, baseDir),
+          targetPath: resolveBundledSkillPath(skill),
           detail: err instanceof Error ? err.message : String(err),
         },
       });
