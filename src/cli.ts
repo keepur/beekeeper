@@ -129,6 +129,19 @@ switch (command) {
     if (userExit) process.exit(userExit);
     break;
   }
+  case "frame": {
+    let frameExit = 0;
+    try {
+      const { runFrameCli } = await import("./frames/cli.js");
+      frameExit = await runFrameCli(process.argv.slice(3));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`beekeeper frame failed: ${msg}`);
+      frameExit = 1;
+    }
+    if (frameExit) process.exit(frameExit);
+    break;
+  }
   case "pipeline-tick": {
     const { loadConfig } = await import("./config.js");
     const { runPipelineCli } = await import("./pipeline/cli.js");
