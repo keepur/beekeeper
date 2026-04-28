@@ -251,7 +251,7 @@ describe("detectInstanceState", () => {
     }
   });
 
-  it("returns cosSeeded=false when CoS prompt is well below frame-template baseline length", async () => {
+  it("returns cosSeeded=false when CoS prompt is well below the engine-default seed length", async () => {
     const sp = mkServicePath("partial-cos-default");
     try {
       const db = makeMockDb({
@@ -265,6 +265,42 @@ describe("detectInstanceState", () => {
       const result = await detectInstanceState(db, FRESH_INPUT(sp));
       expect(result.state).toBe("fresh");
       expect(result.detail.cosSeeded).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns cosSeeded=false when CoS prompt is exactly at the threshold (280 chars)", async () => {
+    const sp = mkServicePath("cos-at-threshold");
+    try {
+      const db = makeMockDb({
+        agentDefs: {
+          "chief-of-staff": {
+            _id: "chief-of-staff",
+            systemPrompt: "a".repeat(280),
+          },
+        },
+      });
+      const result = await detectInstanceState(db, FRESH_INPUT(sp));
+      expect(result.detail.cosSeeded).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns cosSeeded=true when CoS prompt is one char above the threshold (281 chars)", async () => {
+    const sp = mkServicePath("cos-above-threshold");
+    try {
+      const db = makeMockDb({
+        agentDefs: {
+          "chief-of-staff": {
+            _id: "chief-of-staff",
+            systemPrompt: "a".repeat(281),
+          },
+        },
+      });
+      const result = await detectInstanceState(db, FRESH_INPUT(sp));
+      expect(result.detail.cosSeeded).toBe(true);
     } finally {
       cleanup();
     }
