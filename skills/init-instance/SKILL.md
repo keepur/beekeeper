@@ -337,7 +337,13 @@ This is a deliberate scope choice: init has three macro writes (constitution, fr
 
 ## Idempotency
 
-[FILLED IN BY TASK 11]
+Init is fundamentally a one-shot per instance. The idempotency story:
+
+- **`fresh` → run produces `completed`** (or `partial` on failure). Re-running on `completed` refuses by default; the operator must explicitly `force re-init` to repeat.
+- **`partial` → resume produces `completed`** without re-doing the durable work. The operator may re-answer interview questions for not-yet-written pieces (conversation context isn't replayable across sessions).
+- **`force re-init` on `completed`** is treated as `partial` with `redo from scratch` — destructive, requires per-artifact operator confirmation (per spec open-design item 2: per-artifact, finding-by-finding confirmation, NOT category-grouped). Walk the four detail booleans in order and ask one yes/no per artifact: "remove the populated Section 2? (y/n)", "remove the `hive-baseline` frame application record? (y/n)", "remove the CoS agent definition? (y/n)", "remove the seeded handoff memory? (y/n)". Each `y` removes that artifact; each `n` keeps it. Then re-run from Phase 1.
+
+This is *not* the same idempotency contract as `tune-instance` (which expects clean re-runs to produce zero structural findings). Init is not designed for clean re-runs because the operator interview is a one-shot creative input. Re-running init on the same instance is a recovery mechanism, not a first-class expected operation.
 
 ## Failure recovery
 
