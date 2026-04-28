@@ -2,7 +2,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { parse as parseYaml } from "yaml";
-import type { BeekeeperConfig, OrchestratorConfig, PipelineConfig } from "./types.js";
+import type { BeekeeperConfig, InstanceConfig, OrchestratorConfig, PipelineConfig } from "./types.js";
 import { createLogger } from "./logging/logger.js";
 
 const log = createLogger("beekeeper-config");
@@ -94,6 +94,26 @@ function discoverUserSkills(): string[] {
     }
   }
   return paths;
+}
+
+function parseInstances(raw: unknown): Record<string, InstanceConfig> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const out: Record<string, InstanceConfig> = {};
+  for (const [id, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!val || typeof val !== "object") {
+      throw new Error(`beekeeper.yaml: instances.${id} must be an object`);
+    }
+    const v = val as Record<string, unknown>;
+    if (typeof v.servicePath !== "string" || v.servicePath.length === 0) {
+      throw new Error(`beekeeper.yaml: instances.${id}.servicePath is required`);
+    }
+    out[id] = {
+      servicePath: v.servicePath,
+      mongoUri: typeof v.mongoUri === "string" ? v.mongoUri : undefined,
+      dbName: typeof v.dbName === "string" ? v.dbName : undefined,
+    };
+  }
+  return out;
 }
 
 function parseOrchestrator(raw: unknown): OrchestratorConfig | undefined {
@@ -247,6 +267,7 @@ export function loadConfig(): BeekeeperConfig {
     plugins: allPlugins,
     capabilitiesHealthIntervalMs: (raw.capabilities_health_interval_ms as number) ?? 10000,
     capabilitiesFailureThreshold: (raw.capabilities_failure_threshold as number) ?? 2,
+    instances: parseInstances(raw.instances),
     pipeline: parsePipeline(raw.pipeline),
   };
 }
