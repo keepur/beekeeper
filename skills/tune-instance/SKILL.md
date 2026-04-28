@@ -281,6 +281,27 @@ For a frame-naive instance (no `applied.json`, no anchored sections, no `replace
 
 ## Phase 2 — Operator review
 
+### Leading note (when Step 0 returned partial)
+
+If Step 0's `init-state` returned `partial`, the consolidated report opens with a leading note **before** the per-category findings, formatted:
+
+```
+NOTE: instance <instance-id> is partially initialized.
+  section2Written:        <true | false>
+  frameApplied:           <true | false>
+  cosSeeded:              <true | false>
+  handoffMemoryWritten:   <true | false>
+  lastInitAppliedAt:      <ISO timestamp or "unknown">
+
+Some findings below may be artifacts of incomplete init rather than drift.
+Recommend completing `init-instance` (resume from where it left off — the
+skill detects `partial` and offers a resume dialog) before applying tune
+fixes. The audit report is still useful as a checkpoint, but read it through
+the lens that init wasn't done yet.
+```
+
+If Step 0's `init-state` returned `completed`, this leading note is omitted (the existing report opens with the per-category findings as before).
+
 After the audit, the skill emits a single consolidated report to the operator (no drip — full picture in one message). Format follows the playbook draft's structured-text shape, with each finding numbered for cherry-pick reference. Per-category prefixes:
 
 - `C` = constitution drift
@@ -299,6 +320,8 @@ Example report shape:
 
 ```
 TUNE-INSTANCE REPORT: <instance-id>  |  <run-id>  |  <date>
+
+[OPTIONAL: leading note from Step 0 partial branch — see "Leading note" subsection above]
 
 CONSTITUTION DRIFT (5 findings)
   C1. §1.7–1.10 restate Risk Levels table — propose: drop sections
