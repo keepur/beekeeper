@@ -81,9 +81,13 @@ describe.runIf(HAS_TEST_URI)("frames Phase 2 e2e smoke (apply -> audit -> remove
       join(frameRoot, "prompt-clause.md"),
       "Smoke prompt clause for rae.\n",
     );
+    // KPR-106: frame fragment files must NOT contain anchor tags — the engine
+    // emits them in replace-anchor mode. An in-fragment <a id="capabilities">
+    // here would create a duplicate anchor in the post-write document and trip
+    // collectAnchorSet during audit.
     writeFileSync(
       join(frameRoot, "constitution-frag.md"),
-      `<a id="capabilities"></a>\nSmoke replacement capabilities clause.\n`,
+      `Smoke replacement capabilities clause.\n`,
     );
 
     // Seed agent_definitions: rae has both anchors needed.
