@@ -280,7 +280,60 @@ If a step fails *before* writing its artifact (e.g., a network error in 4c that 
 
 ## Phase 5 — Handoff to CoS
 
-[FILLED IN BY TASK 10]
+You write a final hot-tier memory record on the CoS agent describing what just happened. This record is the load-bearing handoff: when the operator sends their first Slack message to CoS, the hot tier surfaces this record into her prompt context, so her first turn is already pre-tuned.
+
+### Handoff record schema
+
+```yaml
+title: "init-instance handoff from Beekeeper"
+tier: hot
+content: |
+  You were just seeded by Beekeeper at <timestamp> via the init-instance skill.
+  Your operator is <operator name and role>.
+  This Hive supports <one-paragraph operation description>.
+  The team includes <list of team members from interview>.
+  Your initial scope is <CoS-shaping notes synthesized into role description>.
+  Approval delegation: <synthesized rules>.
+  The operator mentioned wanting to spin up these agents next:
+    - <name>: <role sketch>
+    - <name>: <role sketch>
+  Use the frame's role→tool registry (see your `frame_lookup` capability or
+  ask Beekeeper) when provisioning new agents. Constitution §1.16 forbids
+  you from modifying your own prompt; coordinate with Beekeeper for prompt
+  changes, with the operator for Section 2 changes.
+metadata:
+  seedRunId: <runId>
+  seededBy: beekeeper-init-instance
+  seededAt: <timestamp>
+```
+
+### Hot-tier surface note
+
+The hot tier reads records directly (no embeddings dependency) per the structured-memory model, so this record surfaces in CoS's prompt context on her first turn. CoS's first conversation reads this naturally — there is no special "first conversation" code path in the engine. First-time vs nth-time is just memory contents.
+
+The other hot-tier seeds written in step 4e (operator identity, team roster, comms norms, approval delegation values) are all that, layered with this handoff record. Be deliberate about hot-tier count — the universal cap is ~12 records. If 4e wrote 6 structured records and Phase 5 adds this 7th handoff record, you're well under cap. If 4e somehow wrote 11+ records, prune before adding the 7th — this handoff is the load-bearing one.
+
+### Operator next-steps message
+
+After the handoff record lands, emit a final message to the operator:
+
+```
+Init complete for <instance-id>.
+Constitution Section 1 + Section 2 written.
+Frame `hive-baseline` applied.
+CoS agent `<cos-id>` seeded with <N> hot-tier memory records.
+
+Next steps:
+  - Start the hive service if it isn't running: `launchctl kickstart -k gui/$(id -u)/com.hive.<instance-id>.agent`
+  - Send a message to <cos-id> in Slack — she's pre-tuned with your operator context and ready to pick up the team-building you described.
+  - When ready to spin up the agents you mentioned (X, Y, Z), ask <cos-id> in Slack — she'll use the frame's role→tool registry to provision them.
+```
+
+### No run-artifact file in v1
+
+Unlike `tune-instance`'s `tune-runs/<runId>.md`, init does not write a per-run findings doc. The audit trail is the `updatedBy: "beekeeper-init-instance:<runId>"` tags across the affected Mongo docs plus the Phase 5 handoff memory record (which carries `seedRunId` + the synthesized operator context). Conversation context is not durable — only the artifacts are.
+
+This is a deliberate scope choice: init has three macro writes (constitution, frame apply, CoS) versus `tune-instance`'s dozens of remediations, and the tagged Mongo docs are sufficient to reconstruct what was seeded. If a future need arises (e.g. multi-operator review of historical inits), an `init-runs/<runId>.md` artifact can be added without breaking compatibility.
 
 ## Idempotency
 
