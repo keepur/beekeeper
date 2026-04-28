@@ -9,6 +9,7 @@
   },
   "files": [
     "dist/",
+    "skills/",
     "beekeeper.yaml.example",
     "LICENSE",
     "README.md"
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",
+    "@linear/sdk": "^39.2.1",
     "better-sqlite3": "^12.8.0",
     "dotenv": "^17.3.1",
     "jsonwebtoken": "^9.0.3",

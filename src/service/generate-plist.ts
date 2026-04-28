@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, unlinkSync, existsSync, chmodSync, copyFileSy
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createLogger } from "../logging/logger.js";
+import { installSkillSymlink, removeSkillSymlink } from "./skill-installer.js";
 
 const log = createLogger("beekeeper-service");
 
@@ -255,6 +256,22 @@ export function install(configDir?: string): void {
   }
   console.log(`Start with: launchctl load ${plistPath}`);
   console.log(`Stop with:  launchctl unload ${plistPath}`);
+
+  try {
+    const skillResult = installSkillSymlink();
+    if (skillResult.status === "created") {
+      console.log(`Skill installed: ${skillResult.linkPath} → ${skillResult.targetPath}`);
+    } else if (skillResult.status === "replaced") {
+      console.log(`Skill symlink replaced: ${skillResult.linkPath} → ${skillResult.targetPath}`);
+    } else if (skillResult.status === "already-current") {
+      // silent — re-run idempotence
+    } else if (skillResult.status === "blocked-real-dir") {
+      console.log(`Skill NOT installed (real directory at ${skillResult.linkPath}): ${skillResult.detail}`);
+    }
+  } catch (err) {
+    log.warn("Skill install failed", { error: err instanceof Error ? err.message : String(err) });
+    console.log("Skill install failed (non-fatal); see logs.");
+  }
 }
 
 export function uninstall(): void {
@@ -274,4 +291,12 @@ export function uninstall(): void {
   // Note: we intentionally do NOT delete the wrapper script under bin/start.sh.
   // It's harmless without the plist and users may still invoke it manually
   // from the shell.
+
+  const skillRemove = removeSkillSymlink();
+  if (skillRemove.status === "removed") {
+    console.log(`Skill symlink removed: ${skillRemove.linkPath}`);
+  } else if (skillRemove.status === "skipped-real-dir") {
+    console.log(`Skill at ${skillRemove.linkPath} is a real directory — not removing.`);
+  }
+  // "not-present" → silent
 }

@@ -52,6 +52,38 @@ export interface InstanceConfig {
   dbName?: string;
 }
 
+export interface OrchestratorStallThresholds {
+  drafting:    { soft: number; hard: number };
+  review:      { soft: number; hard: number };
+  implementer: { soft: number; hard: number };
+}
+
+export interface OrchestratorPipelineModels {
+  drafting: string;
+  review: string;
+  implementer: string;
+}
+
+export interface OrchestratorConfig {
+  stallThresholds: OrchestratorStallThresholds;
+  pipelineModel: OrchestratorPipelineModels;
+  /** Regex strings (raw, anchored), one per allowlist row in the design spec. */
+  bashAllowlist: string[];
+  /** ms — completed/errored job retention before eviction from the in-memory map. */
+  jobTtlMs: number;
+}
+
+export interface PipelineConfig {
+  /** Linear team key (e.g., "KPR" for Keepur). Used to filter `--all`/team scope. */
+  linearTeamKey: string;
+  /** Optional: explicit repo allowlist for repo-resolver. Keyed by short name. */
+  repoPaths?: Record<string, string>;
+  /** Optional: default branch for `epic→main` merges (defaults to "main"). */
+  mainBranch?: string;
+  /** Phase 2 orchestrator config. Required when running Beekeeper server with pipeline-tick. */
+  orchestrator?: OrchestratorConfig;
+}
+
 export interface BeekeeperConfig {
   port: number;
   model: string;
@@ -66,4 +98,6 @@ export interface BeekeeperConfig {
   capabilitiesFailureThreshold: number;
   /** Map of instanceId → instance config. Used by the `frame` subcommand. */
   instances?: Record<string, InstanceConfig>;
+  /** Pipeline-tick configuration. Required only when `pipeline-tick` subcommand is invoked. */
+  pipeline?: PipelineConfig;
 }

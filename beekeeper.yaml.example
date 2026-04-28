@@ -32,3 +32,46 @@ instances:
     servicePath: /Users/youruser/services/hive/dodi
   keepur:
     servicePath: /Users/youruser/services/hive/keepur
+
+# Pipeline-tick configuration. Required only when running `beekeeper pipeline-tick`.
+# linearTeamKey is the Linear team prefix (e.g., "KPR" for Keepur).
+# repoPaths maps short repo names to absolute paths on disk; consumed by the
+#   description-grep repo-resolver. If omitted, the resolver falls back to
+#   ~/github/<name>.
+# mainBranch defaults to "main" if omitted.
+pipeline:
+  linearTeamKey: KPR
+  repoPaths:
+    hive: ~/github/hive
+    beekeeper: ~/github/beekeeper
+  mainBranch: main
+  # Phase 2 SDK orchestrator configuration. Required when running the
+  # Beekeeper server (the `subagent-spawn` HTTP client routes through it).
+  orchestrator:
+    stallThresholds:
+      drafting:    { soft: 300000,  hard: 900000  }   # 5 min / 15 min
+      review:      { soft: 300000,  hard: 900000  }
+      implementer: { soft: 600000,  hard: 1800000 }   # 10 min / 30 min
+    pipelineModel:
+      drafting: claude-opus-4-7
+      review: claude-opus-4-7
+      implementer: claude-sonnet-4-6
+    bashAllowlist:
+      - "^gh (issue|pr|repo|api|workflow|auth status|run) "
+      - "^git (status|diff|log|show|add|commit|push|fetch|pull|rebase|merge|checkout|switch|branch|worktree|stash|tag|remote|reset --soft|cherry-pick) "
+      - "^npm (run|install|ci|test|version|pack) "
+      - "^npx (tsc|vitest|eslint|prettier|tsx|@anthropic-ai) "
+      - "^node "
+      - "^cat "
+      - "^ls "
+      - "^pwd"
+      - "^which "
+      - "^find "
+      - "^mkdir "
+      - "^cp "
+      - "^mv "
+      - "^chmod "
+      - "^security find-generic-password "
+      - "^mongosh "
+      - "^mongo "
+    jobTtlMs: 86400000

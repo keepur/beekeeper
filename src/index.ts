@@ -17,6 +17,11 @@ import { readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import type { ClientMessage, ServerMessage } from "./types.js";
 import { handleImage, handleFile } from "./file-handler.js";
+import { PipelineOrchestrator } from "./pipeline/orchestrator/index.js";
+import { handlePipelineAdminRequest } from "./pipeline/orchestrator/http.js";
+import { runStartupRecovery } from "./pipeline/orchestrator/recovery.js";
+import { LinearClient as PipelineLinearClient } from "./pipeline/linear-client.js";
+import { resolveBeekeeperSecret } from "./pipeline/honeypot-reader.js";
 
 const log = createLogger("beekeeper");
 
@@ -34,6 +39,33 @@ async function main(): Promise<void> {
 
   // Capability manifest — populated by sibling processes via /internal/register-capability.
   const capabilities = new CapabilityManifest();
+
+  // --- Pipeline orchestrator (Phase 2) ---
+  let orchestrator: PipelineOrchestrator | null = null;
+  if (config.pipeline?.orchestrator) {
+    const linearApiKey = resolveBeekeeperSecret("LINEAR_API_KEY");
+    if (!linearApiKey) {
+      log.warn("pipeline.orchestrator configured but LINEAR_API_KEY not resolvable; orchestrator disabled");
+    } else {
+      const pipelineLinear = new PipelineLinearClient({ apiKey: linearApiKey, teamKey: config.pipeline.linearTeamKey });
+      orchestrator = new PipelineOrchestrator({
+        config: config.pipeline.orchestrator,
+        linear: pipelineLinear,
+        resolveIssueId: async (ticketId) => (await pipelineLinear.getTicketState(ticketId)).id,
+      });
+      orchestrator.start();
+      // Startup recovery: scan in-flight subagents lost to a previous restart.
+      // Bound by 24h spawn-log window; safe to re-run on a clean instance.
+      try {
+        await runStartupRecovery({
+          linear: pipelineLinear,
+          activeAgentIds: orchestrator.activeAgentIds(), // empty on cold boot
+        });
+      } catch (err) {
+        log.error("startup recovery failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
 
   // Track connected devices — multiple connections per device allowed.
   // Each entry tracks both the client socket and, for team-channel connections,
@@ -76,6 +108,16 @@ async function main(): Promise<void> {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // Pipeline admin endpoints (loopback + Bearer-auth, gated inside the dispatcher).
+    if (orchestrator) {
+      const handled = await handlePipelineAdminRequest(req, res, {
+        orchestrator,
+        adminSecret: config.adminSecret,
+        readBody,
+      });
+      if (handled) return;
     }
 
     const url = new URL(req.url ?? "/", `http://localhost:${config.port}`);
@@ -900,6 +942,7 @@ async function main(): Promise<void> {
     log.info("Shutting down");
     clearInterval(reapTimer);
     capabilities.stopHealthLoop();
+    if (orchestrator) await orchestrator.stopAll();
     sessionManager.persistSessions();
     await sessionManager.stopAll();
     wss.close();
