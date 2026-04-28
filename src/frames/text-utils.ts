@@ -8,18 +8,35 @@ export function escapeRe(s: string): string {
 
 /**
  * Extract the text from `<a id="anchor">` to the next anchor (or end-of-document).
- * Returns empty string if anchor is not found.
+ *
+ * When `frameAnchors` is provided, the scan ends at the next anchor whose id is in
+ * that set. Anchors not in the set are walked past — they are part of the
+ * operator's document, not part of the frame's managed surface, and the frame's
+ * neighborhood should not be cut short by them.
+ *
+ * Returns empty string if `anchor` itself is not found in `markdown`.
  */
-export function extractAnchorNeighborhood(markdown: string, anchor: string): string {
+export function extractAnchorNeighborhood(
+  markdown: string,
+  anchor: string,
+  frameAnchors?: Set<string>,
+): string {
   const startRe = new RegExp(`<a\\s+id\\s*=\\s*"${escapeRe(anchor)}"\\s*(?:/?>\\s*</a>|/>|>)`);
   const startMatch = markdown.match(startRe);
   if (!startMatch || startMatch.index === undefined) return "";
   const startIdx = startMatch.index;
   const afterStart = startIdx + startMatch[0].length;
-  const nextAnchorRe = /<a\s+id\s*=\s*"[^"]+"\s*(?:\/?>\s*<\/a>|\/>|>)/g;
-  nextAnchorRe.lastIndex = afterStart;
-  const next = nextAnchorRe.exec(markdown);
-  const endIdx = next?.index ?? markdown.length;
+  // Search only the region after the start anchor for the next boundary.
+  const tail = markdown.slice(afterStart);
+  const anyAnchorRe = /<a\s+id\s*=\s*"([^"]+)"\s*(?:\/?>\s*<\/a>|\/>|>)/g;
+  let endIdx = markdown.length;
+  for (const match of tail.matchAll(anyAnchorRe)) {
+    if (frameAnchors === undefined || frameAnchors.has(match[1])) {
+      endIdx = afterStart + (match.index ?? 0);
+      break;
+    }
+    // continue scanning; this anchor is outside the frame's managed surface.
+  }
   return markdown.slice(startIdx, endIdx);
 }
 
