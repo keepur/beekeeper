@@ -271,3 +271,39 @@ Spec review-clean → KPR-86 advances to plan execution. Plan covers:
 11. Refinement findings — file follow-up tickets for non-trivial findings; small fixes roll into this phase's PR.
 
 Estimated 1 day of focused work — content authoring (~2 hours), validation walkthrough (~3 hours), refinement loop (~3 hours).
+
+## Refinement findings (2026-04-27 validation)
+
+Validation walkthrough run 2026-04-27 against dodi (adopt) and keepur (full apply + drift dialog + remove). Engine prerequisites KPR-99 + KPR-100 + KPR-98 fixed and merged into `KPR-83-frames` (PRs #33, #34) before completing the walkthrough.
+
+**Plan refinements (8 — applied at execution time, captured here for the spec record):**
+
+1. **CLI shape** — `frame audit <instance>` is single-arg (walks all applied frames), not `<frameName> <instance>`.
+2. **Apply takes a path; remove takes a name** — `frame apply <framePath> <instance>` vs `frame remove <name> <instance>`. CLI inconsistency worth filing as ergonomics ticket.
+3. **Entry point** — `node dist/cli.js frame …`, not `dist/frames/cli.js …` directly.
+4. **Mongo schema** — `db.memory.findOne({ path: "shared/constitution.md" })`. Both dodi and keepur index by `path`; this is not a dodi legacy.
+5. **Skill source layout on dodi** — nested at `~/services/hive/dodi/skills/memory-hygiene/skills/memory-hygiene-review/SKILL.md`; frame layout mirrors that nesting.
+6. **Frame manifest filename** — `frame.yaml` (not `manifest.yaml`); no `assets/` wrapper; flat `constitution/` and `skills/` under root.
+7. **Operator pre-req** — `~/.beekeeper/beekeeper.yaml` needs an `instances:` section (servicePath only; mongoUri + dbName default to `mongodb://localhost/hive_<id>`). Plan should call this out as the first operator step before any `frame …` invocation.
+8. **Anchor adjacency requirement (now obsolete)** — original plan included a workaround forcing operator pre-flight migrations to make the frame's anchors document-adjacent (KPR-100 over-replacement bug). KPR-100 is now fixed (Option A — frame-scoped neighborhood); non-adjacent anchors apply correctly. Pre-flight migrations remain useful for *creating* the anchors but no longer need to enforce adjacency.
+
+**Engine bugs surfaced + filed during validation:**
+
+- KPR-98 (Medium) — `computeBundleHash` non-recursion. Fixed in PR #34. Migration: existing nested-only bundle records report `skill-modified-locally` on first audit; resolved via drift-dialog `take-frame`.
+- KPR-99 (High) — `replace-anchor` didn't re-emit `<a id>` tag, dropped manifest's `title:`. Fixed in PR #33.
+- KPR-100 (Urgent) — `replace-anchor` neighborhood extended to next anchor of any kind. Fixed in PR #33 (Option A).
+- KPR-105 (High) — drift-resolved apply overwrites `snapshotBefore`, breaking `frame remove` rollback fidelity. **Filed; not yet fixed.** Surfaced during Task 10 (remove cleanup): on keepur, `frame remove` after a drift-resolved apply restored the document to the drift-injected state instead of the pre-first-apply baseline.
+
+**Validation outcome (acceptance criteria):**
+
+- ✅ Frame directory + layout (Tasks 1-4) — clean.
+- ✅ `frame apply --adopt hive-baseline dodi` succeeds; record exists. Audit currently shows 2 expected migration drift findings (snapshot stale post-engine-fixes); resolution requires interactive `merged` to preserve dodi's customization (the §4.3 number prefix + dodi-specific SMS/resend line). Recommended structural cleanup: extract the SMS/resend clause into its own anchor so frame and customization don't collide on the same anchor.
+- ✅ `frame apply hive-baseline keepur` succeeds end-to-end; constitution grew 7518 → 7886 chars (no data loss). All anchors preserved at non-adjacent positions; KPR-99/100 confirmed fixed.
+- ✅ Drift dialog walked end-to-end (`take-frame` via `--yes`); surgical write (1 resource modified, not all 3); audit clean post-resolution.
+- ⚠️ `frame remove hive-baseline keepur` cleared the `applied_frames` record but did NOT restore the constitution to the pre-apply baseline (blocked on KPR-105). Workaround: operators avoid drift-resolved applies if rollback fidelity matters, or accept the post-frame state as the new baseline.
+- ✅ Refinement findings filed.
+
+**Live-instance state post-validation:**
+
+- **dodi**: `applied_frames` has `hive-baseline` v1.0.0 record; constitution has all 3 anchors with frame content; 2 expected migration drift findings noted above; no data loss; no risk.
+- **keepur**: `applied_frames` cleared; constitution at 7886 chars containing the canonical frame content (frame `message-delivery`, `memory`, `capabilities` clauses + the operator content from the pre-apply baseline). Operator can choose to revert further toward the original 7518-char post-pre-flight-migration baseline via manual mongo edit, or accept the current state as the new baseline (recommended — frame content is the canonical reference).
