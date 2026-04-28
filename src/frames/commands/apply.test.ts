@@ -24,6 +24,42 @@ describe("extractAnchorNeighborhood", () => {
   it("returns empty when anchor missing", () => {
     expect(extractAnchorNeighborhood(`no anchors`, "x")).toBe("");
   });
+
+  it("KPR-100: with frameAnchors set, ends at next anchor in the set", () => {
+    const md = [
+      "<a id=\"a\"></a>",
+      "a-body",
+      "<a id=\"x\"></a>",
+      "operator-injected",
+      "<a id=\"b\"></a>",
+      "b-body",
+    ].join("\n");
+    const r = extractAnchorNeighborhood(md, "a", new Set(["a", "b"]));
+    expect(r).toContain("a-body");
+    expect(r).toContain("operator-injected"); // walks past x
+    expect(r).not.toContain("b-body");
+  });
+
+  it("KPR-100: with frameAnchors set, walks past anchors not in the set to EOD", () => {
+    const md = [
+      "<a id=\"a\"></a>",
+      "a-body",
+      "<a id=\"x\"></a>",
+      "x-body",
+    ].join("\n");
+    const r = extractAnchorNeighborhood(md, "a", new Set(["a"]));
+    // No other frame anchor — neighborhood runs to end-of-document.
+    expect(r).toContain("a-body");
+    expect(r).toContain("x-body");
+  });
+
+  it("KPR-100: empty frameAnchors set runs scan to end-of-document", () => {
+    const md = `<a id="a"></a>\nA-body\n<a id="b"></a>\nB-body`;
+    const r = extractAnchorNeighborhood(md, "a", new Set());
+    // Empty set: no anchor is in the frame, so scan walks past <a id="b"> too.
+    expect(r).toContain("A-body");
+    expect(r).toContain("B-body");
+  });
 });
 
 interface MockAgent {
@@ -255,6 +291,14 @@ describe("buildAdoptRecord populates all six asset types", () => {
     expect(record.resources.constitution?.anchors).toEqual(["cap"]);
     expect(record.resources.constitution?.snapshotBefore).toBe(constitutionContent);
     expect(record.resources.constitution?.insertedText.cap).toContain("cap-body");
+    // KPR-100: adopt's recorded neighborhood is frame-scoped (matches what
+    // apply would write later). Single-anchor frame -> neighborhood runs to
+    // EOD, including the operator's <a id="end"> marker that the frame doesn't
+    // manage.
+    expect(record.resources.constitution?.insertedText.cap).toContain(
+      "<a id=\"end\"></a>",
+    );
+    expect(record.resources.constitution?.insertedText.cap).toContain("end");
   });
 
   it("throws MissingAnchorError when a skill bundle is absent under --adopt", async () => {
