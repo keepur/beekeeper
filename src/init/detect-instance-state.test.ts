@@ -90,8 +90,28 @@ const EMPTY_SECTION_2 = [
   "<!-- section-2:end -->",
 ].join("\n");
 
-const LONG_PROMPT = "a".repeat(250); // > 200 threshold
+const LONG_PROMPT = "a".repeat(400); // > 280 threshold
 const SHORT_PROMPT = "frame template baseline only"; // ~30 chars
+
+/**
+ * Verbatim copy of the engine-shipped default CoS `systemPrompt` from
+ * the hive repo `seeds/chief-of-staff/agent.yaml` (the YAML `|` block
+ * scalar at the `systemPrompt:` field). Length: 230 chars.
+ *
+ * This fixture locks `COS_PROMPT_NONDEFAULT_THRESHOLD` to real content —
+ * if the engine default grows past the threshold, the
+ * "engine-shipped default verbatim" test below will fail and force us
+ * to re-derive the constant rather than silently regress to a false
+ * positive that masks a `partial` instance as `completed`.
+ */
+const ENGINE_DEFAULT_COS_PROMPT = `You are the Chief of Staff agent. Your role:
+- Coordinate across agents when needed
+- Handle administrative tasks
+- Advise the owner on agent team management
+- Troubleshoot agent issues
+
+Always be direct, concise, and actionable.
+`;
 
 const ULID_STR = "01HW0000000000000000000001";
 
@@ -231,7 +251,7 @@ describe("detectInstanceState", () => {
     }
   });
 
-  it("returns cosSeeded=false when CoS prompt is at frame-template baseline length", async () => {
+  it("returns cosSeeded=false when CoS prompt is well below frame-template baseline length", async () => {
     const sp = mkServicePath("partial-cos-default");
     try {
       const db = makeMockDb({
@@ -239,6 +259,32 @@ describe("detectInstanceState", () => {
           "chief-of-staff": {
             _id: "chief-of-staff",
             systemPrompt: SHORT_PROMPT,
+          },
+        },
+      });
+      const result = await detectInstanceState(db, FRESH_INPUT(sp));
+      expect(result.state).toBe("fresh");
+      expect(result.detail.cosSeeded).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("returns cosSeeded=false when CoS prompt is the engine-shipped default verbatim", async () => {
+    // This is the realistic boundary case: the hive setup wizard inserts
+    // `seeds/chief-of-staff/agent.yaml` verbatim into `agent_definitions`
+    // on a fresh install, so a freshly-seeded but un-tuned instance has
+    // exactly this prompt (230 chars). The threshold MUST classify this
+    // as default, not operator-tuned, or `detectInstanceState` returns a
+    // false-positive `completed` for an instance that's actually
+    // `partial`.
+    const sp = mkServicePath("partial-cos-engine-default");
+    try {
+      const db = makeMockDb({
+        agentDefs: {
+          "chief-of-staff": {
+            _id: "chief-of-staff",
+            systemPrompt: ENGINE_DEFAULT_COS_PROMPT,
           },
         },
       });
