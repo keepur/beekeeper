@@ -41,6 +41,73 @@ The same `<runId>` is the durable handle across phases, audit logs, and operator
 
 Walk the checklist below. Take notes in a structured findings doc. Output one consolidated proposal to the operator at the end.
 
+### 0. Pre-flight state check
+
+Before running any audit step, verify the target instance has actually been through `init-instance` (KPR-71). Running tune on a fresh or partially-initialized instance produces noisy findings (e.g. "Section 2 missing" — but the right remediation is invoking the `init-instance` skill, not a tune fix). Step 0 short-circuits the obvious cases and annotates the report when init isn't fully done.
+
+#### Invocation
+
+Run `beekeeper init-state <instance-id> --json` via Bash. The command prints a JSON object to stdout shaped:
+
+```
+{
+  "state": "fresh" | "partial" | "completed",
+  "detail": {
+    "section2Written": boolean,
+    "frameApplied": boolean,
+    "cosSeeded": boolean,
+    "handoffMemoryWritten": boolean,
+    "lastInitRunId": string | null,
+    "lastInitAppliedAt": string | null
+  }
+}
+```
+
+This is the same primitive `init-instance` Phase 0 uses (canonical implementation: `src/init/detect-instance-state.ts`); both skills route through the same CLI so they cannot disagree about what "initialized" means.
+
+If the operator referred to a non-default CoS slug (e.g., `mokie`) in their invocation context, pass `--cos-agent-id <slug>` so detection picks up the right CoS record. Otherwise the default (`chief-of-staff`) is used.
+
+#### Failure handling
+
+If `beekeeper init-state` exits non-zero, prints empty stdout, or produces output that doesn't parse as the JSON shape above, emit to the operator:
+
+```
+Step 0 pre-flight failed: `beekeeper init-state <instance-id>` did not return
+a parseable result. Check that Beekeeper is running, MongoDB is reachable,
+and `<instance-id>` is registered in `~/.beekeeper/beekeeper.yaml`.
+Re-invoke tune-instance once the pre-flight succeeds.
+```
+
+**Exit Phase 1.** Don't proceed with the audit on an unparseable state check — auditing under unknown init state produces unreliable findings.
+
+#### Branches
+
+- **`fresh`** → tune-instance is the wrong tool. Emit to the operator:
+
+  ```
+  Instance <instance-id> has not been initialized — `init-state` returned `fresh`
+  (no Section 2, no frame, no CoS, no handoff memory).
+
+  Invoke the `init-instance` skill from a Beekeeper conversation for instance
+  `<instance-id>`, then re-invoke tune-instance once init completes.
+  ```
+
+  **Exit Phase 1.** No findings produced, no report drafted, no Phase 2/3/4 run. Return control to the operator.
+
+- **`partial`** → audit proceeds (Steps 1–12 run normally), but:
+  - The Phase 2 report opens with a **leading note** stating that the instance is partially initialized, listing which `detail` booleans are `false`, and citing `lastInitAppliedAt` if present.
+  - A new finding is appended under prefix `P` (per-agent prompts category — closest fit, since CoS prompt-shape is the dominant init artifact missing) with a recommendation to complete `init-instance` before applying tune fixes. The finding's proposed action is **manual** (operator runs `init-instance` resume, not a Phase 3 write); the finding is informational, not auto-applyable.
+
+- **`completed`** → audit proceeds normally. No extra finding, no leading note. This is the existing behavior for instances that have been through init.
+
+#### Frame-awareness
+
+The state primitive already accounts for `applied_frames`; Step 0 doesn't add frame-aware logic of its own. If the instance is frame-naive (no `applied_frames` collection), `frameApplied` reads `false` and the state likely lands `partial` or `fresh` depending on the other booleans — that's correct: a frame-naive instance is genuinely not init-completed under the KPR-86 model.
+
+#### Why P prefix and not a new letter
+
+The partial-init finding is structurally a **per-agent prompt completeness** issue — the CoS agent isn't fully shaped, the operator-authored Section 2 is missing, the universal-9 baseline isn't asserted via the frame. Reusing `P` keeps the prefix list stable (no README/spec churn for one informational finding) and the operator can still cherry-pick around it (`skip P0` or whatever the report numbers it). If a future audit run finds enough init-related drift to justify a dedicated prefix (e.g., `I` for init), that's a follow-up; not this ticket.
+
 ### 1. Constitution drift
 
 - **File**: `db.constitution.findOne({})` or whichever doc the engine resolves
@@ -227,6 +294,27 @@ For a frame-naive instance (no `applied.json`, no anchored sections, no `replace
 
 ## Phase 2 — Operator review
 
+### Leading note (when Step 0 returned partial)
+
+If Step 0's `init-state` returned `partial`, the consolidated report opens with a leading note **before** the per-category findings, formatted:
+
+```
+NOTE: instance <instance-id> is partially initialized.
+  section2Written:        <true | false>
+  frameApplied:           <true | false>
+  cosSeeded:              <true | false>
+  handoffMemoryWritten:   <true | false>
+  lastInitAppliedAt:      <ISO timestamp or "unknown">
+
+Some findings below may be artifacts of incomplete init rather than drift.
+Recommend completing `init-instance` (resume from where it left off — the
+skill detects `partial` and offers a resume dialog) before applying tune
+fixes. The audit report is still useful as a checkpoint, but read it through
+the lens that init wasn't done yet.
+```
+
+If Step 0's `init-state` returned `completed`, this leading note is omitted (the existing report opens with the per-category findings as before).
+
 After the audit, the skill emits a single consolidated report to the operator (no drip — full picture in one message). Format follows the playbook draft's structured-text shape, with each finding numbered for cherry-pick reference. Per-category prefixes:
 
 - `C` = constitution drift
@@ -245,6 +333,8 @@ Example report shape:
 
 ```
 TUNE-INSTANCE REPORT: <instance-id>  |  <run-id>  |  <date>
+
+[OPTIONAL: leading note from Step 0 partial branch — see "Leading note" subsection above]
 
 CONSTITUTION DRIFT (5 findings)
   C1. §1.7–1.10 restate Risk Levels table — propose: drop sections
