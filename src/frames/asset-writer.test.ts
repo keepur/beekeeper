@@ -250,6 +250,62 @@ describe("writeConstitutionAnchor / replace-anchor", () => {
     expect(scopedHood).not.toContain("cap body"); // stops at capabilities
   });
 
+  it("KPR-106: strips leading in-fragment anchor tag matching the same id (no duplicate anchors post-write)", async () => {
+    // A frame author who includes `<a id="capabilities"></a>` at the top of
+    // their fragment file should still produce a single-anchor document — the
+    // engine's emitted anchor wins; the fragment's leading tag is stripped.
+    // Without this guard the document would contain two tags for the same id
+    // and `collectAnchorSet` would throw during audit, producing a spurious
+    // `constitution-anchor-missing` finding.
+    const before = "<a id=\"capabilities\"></a>\noriginal body\n";
+    const { db, current } = makeMemoryDb(before);
+    const frameAnchors = new Set(["capabilities"]);
+
+    await writeConstitutionAnchor(
+      db,
+      "capabilities",
+      "replace-anchor",
+      undefined,
+      `<a id="capabilities"></a>\nreplacement body\n`,
+      undefined,
+      frameAnchors,
+    );
+
+    const after = current();
+    // Exactly one anchor for this id.
+    const anchorMatches = after.match(/<a\s+id\s*=\s*"capabilities"\s*(?:\/?>\s*<\/a>|\/>|>)/g) ?? [];
+    expect(anchorMatches.length).toBe(1);
+    // Body is preserved (the in-fragment anchor was stripped, not the prose).
+    expect(after).toContain("replacement body");
+    // collectAnchorSet must succeed (proxy for "audit-clean").
+    const { collectAnchorSet } = await import("./anchor-resolver.js");
+    expect(() => collectAnchorSet(after)).not.toThrow();
+  });
+
+  it("KPR-106: leading anchor tag for a DIFFERENT id is left intact", async () => {
+    // The strip is scoped to the same anchor id only — an in-fragment anchor
+    // for some other id is not necessarily a mistake (separate concern, out of
+    // scope for the KPR-106 guard).
+    const before = "<a id=\"a\"></a>\nold-a\n";
+    const { db, current } = makeMemoryDb(before);
+    const frameAnchors = new Set(["a"]);
+
+    await writeConstitutionAnchor(
+      db,
+      "a",
+      "replace-anchor",
+      undefined,
+      `<a id="other-id"></a>\nfragment body\n`,
+      undefined,
+      frameAnchors,
+    );
+
+    const after = current();
+    expect(after).toContain("<a id=\"a\"></a>");
+    expect(after).toContain("<a id=\"other-id\"></a>");
+    expect(after).toContain("fragment body");
+  });
+
   it("KPR-100: empty frameAnchors set runs scan to end-of-document", async () => {
     // Sanity: with an explicit empty set, no anchor is "in the frame", so the
     // loop never breaks — scan reaches end-of-document. Pins documented
