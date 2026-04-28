@@ -239,7 +239,44 @@ After explicit approval (whether `apply all` or a partial cherry-pick), proceed 
 
 ## Phase 4 — Apply
 
-[FILLED IN BY TASK 9]
+You execute the approved drafts as a sequence of writes, using KPR-83 Phase 2 (KPR-85) `frame apply` write primitives for the frame-managed assets and `admin_*` MCP tools for the operator-authored assets. Each step writes durably before the next begins, so partial-state recovery (Phase 0's `partial` branch) has structured intermediate states.
+
+### Step ordering
+
+| Step | Mechanism | Durable artifact |
+|---|---|---|
+| 4a. Render Section 1 from frame | Frame primitive (KPR-85) emits Section 1 + structural anchors into `db.memory[shared/constitution.md]` as part of `frame apply hive-baseline <instance-id>` | `memory` doc for `shared/constitution.md` |
+| 4b. Insert Section 2 prose | Direct `admin_save_constitution` (Phase 1 frame primitives are read-only at this anchor; Section 2 is operator-authored, not frame-managed) at the Section 2 anchor introduced by the frame in 4a. The anchor's stable name (`section-2`) is defined in the `hive-baseline` frame manifest (KPR-86 deliverable). | Same `memory` doc, updated |
+| 4c. Apply `hive-baseline` frame | `beekeeper frame apply hive-baseline <instance-id>` — the rest of the frame's assets (skills, schedules, prompt anchors, memory seeds, coreservers). 4a is the constitution-anchor portion of this same apply; 4c covers everything else. | `applied_frames.hive-baseline` record |
+| 4d. Render initial CoS agent definition | `admin_save_agent` with the Phase 2 draft (soul + systemPrompt + universal-9 coreServers + role-specific extras from the frame's prompt clauses) | `agent_definitions.<cos-id>` record + `agent_definition_versions` row |
+| 4e. Seed CoS memory | `admin_save_memory` (or direct insert into `agent_memory` collection) with structured records from Phase 1 interview output — operator identity, team roster, comms norms, approval delegation values | `agent_memory` records tagged with `seedRunId: <runId>` |
+| 4f. Stamp template version | Write `constitution-template-version: <semver>` field into the constitution doc's metadata so KPR-72 can detect template drift later | Same `memory` doc, metadata |
+
+Note: 4a + 4c are conceptually one `frame apply` invocation. The split exists because 4b (Section 2 prose) sits between the frame's constitution-anchor write (handled inside `frame apply`) and the rest of the frame's asset writes (skills, schedules, etc.). If the frame primitives evolve to support an injection-callback at the Section 2 anchor, this can collapse — but the spec's split is correct for the v1 primitive surface.
+
+### `updatedBy` tagging rule
+
+Every Phase 4 Mongo write tags `updatedBy: "beekeeper-init-instance:<runId>"` (the ULID allocated at Phase 1 entry). For the `applied_frames` record produced by `frame apply`, the frame primitive's `appliedBy` field carries the equivalent value (`beekeeper-init-instance:<runId>`) per the frames spec section on Apply semantics — pass `--applied-by beekeeper-init-instance:<runId>` (or whatever the frame CLI's escape hatch is) when invoking `beekeeper frame apply` so the audit trail is consistent.
+
+### Post-write SIGUSR1 + verify
+
+After all six steps complete:
+
+- **SIGUSR1 the running hive** to reload agent definitions without a full restart:
+
+  ```
+  kill -USR1 $(pgrep -f "hive-agent <instance-id>")
+  ```
+
+  For a truly fresh instance the hive process may not be running yet; in that case Phase 4 ends and Phase 5 reminds the operator to start the hive service.
+
+- **Verify**: re-query each affected doc (`memory[shared/constitution.md]`, `applied_frames.hive-baseline`, `agent_definitions.<cos-id>`, the seeded `agent_memory` records) to confirm the writes landed. Report any discrepancies to the operator before transitioning to Phase 5.
+
+### Failure mid-Phase-4
+
+Each step is durably committed before the next runs. If 4d fails (e.g., admin tool errors), tell the operator which steps succeeded (4a, 4b, 4c) and which failed (4d) and what's still missing (4e, 4f). On re-invocation, `beekeeper init-state <id> --json` returns `partial` with detail showing 4a-4c done, 4d-4f missing, and Phase 0 routes to the resume dialog. The operator picks resume; you re-run only the missing pieces.
+
+If a step fails *before* writing its artifact (e.g., a network error in 4c that aborts the frame apply mid-resource), the durable state matches what was committed up to that point — `applied_frames` either has the record or it doesn't; partial frames don't exist in the `applied_frames` schema. Tell the operator the truth: which steps actually wrote, regardless of which step name was attempted.
 
 ## Phase 5 — Handoff to CoS
 
