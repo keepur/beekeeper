@@ -98,6 +98,27 @@ async function runAdopt(
   }
   await verifyAnchors(db, manifest, (sel) => resolveAgents(db, sel));
   const record = await buildAdoptRecord(db, manifest);
+
+  // KPR-105: cross-version --adopt on an already-adopted instance preserves
+  // the original snapshotBefore for resource types that have one (constitution,
+  // prompts). The new manifest's anchor set + insertedText reflect the current
+  // (possibly post-prior-frame-content) document; the immutable
+  // pre-first-apply baseline lives on the existing record.
+  if (existing) {
+    if (record.resources.constitution && existing.resources.constitution) {
+      record.resources.constitution.snapshotBefore =
+        existing.resources.constitution.snapshotBefore;
+    }
+    if (record.resources.prompts && existing.resources.prompts) {
+      for (const [agentId, block] of Object.entries(record.resources.prompts)) {
+        const prev = existing.resources.prompts[agentId];
+        if (prev) {
+          block.snapshotBefore = prev.snapshotBefore;
+        }
+      }
+    }
+  }
+
   await store.upsert(record);
   console.log(`Adopted frame "${manifest.name}" v${manifest.version} on "${instance.id}".`);
   console.log(
@@ -182,6 +203,13 @@ async function executeFullApply(
   let constitutionSnapshotBefore: string | undefined;
   const constitutionInsertedText: Record<string, string> = {};
   const constitutionAnchorsWritten: string[] = [];
+  // KPR-105: preserve original snapshotBefore (the persisted, "before-first-
+  // apply" baseline) across drift-resolved applies. The in-flight rollback
+  // target — what reverseBestEffort writes if step 6 throws — remains the
+  // pre-this-round state captured by the writer; those two semantics diverge
+  // for drift-resolved applies and need separate variables.
+  const persistedConstitutionSnapshot =
+    existing?.resources.constitution?.snapshotBefore;
 
   try {
     // 6a. skills
@@ -306,7 +334,25 @@ async function executeFullApply(
         writtenLabels.push(key);
       }
     }
-    if (Object.keys(writtenPrompts).length > 0) resources.prompts = writtenPrompts;
+    // KPR-105: writtenPrompts[*].snapshotBefore is the in-flight rollback
+    // target (consumed by reverseBestEffort). The persisted record needs the
+    // pre-first-apply baseline, which is preserved from the existing record
+    // when this is a drift-resolved apply.
+    if (Object.keys(writtenPrompts).length > 0) {
+      const persistedPrompts: Record<
+        string,
+        { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> }
+      > = {};
+      for (const [agentId, block] of Object.entries(writtenPrompts)) {
+        const existingSnap = existing?.resources.prompts?.[agentId]?.snapshotBefore;
+        persistedPrompts[agentId] = {
+          anchors: block.anchors,
+          snapshotBefore: existingSnap ?? block.snapshotBefore,
+          insertedText: block.insertedText,
+        };
+      }
+      resources.prompts = persistedPrompts;
+    }
 
     // 6f. constitution — capture single snapshot before the first write.
     const constitutionFrameAnchors = new Set(
@@ -339,7 +385,10 @@ async function executeFullApply(
     if (constitutionAnchorsWritten.length > 0) {
       resources.constitution = {
         anchors: constitutionAnchorsWritten,
-        snapshotBefore: constitutionSnapshotBefore ?? "",
+        // KPR-105: persisted snapshot uses the carried-over original baseline
+        // when present (drift-resolved apply); writer-captured value is only
+        // used on first-time apply.
+        snapshotBefore: persistedConstitutionSnapshot ?? constitutionSnapshotBefore ?? "",
         insertedText: constitutionInsertedText,
       };
     }
@@ -379,6 +428,16 @@ async function executeFullApply(
     }
   }
 
+  // KPR-105: drift-resolved applies only re-write resources flagged in
+  // forceWriteResources. Resources untouched this round must carry forward
+  // from the existing record so the persisted record stays a complete
+  // description of what the frame contributed. Without this, subsequent
+  // audits stop checking untouched resource types and `frame remove` no
+  // longer cleans them up.
+  if (existing) {
+    mergeUntouchedResources(resources, existing.resources);
+  }
+
   // Step 7: stage record (now that all writes succeeded).
   const stagedRecord: AppliedFrameRecord = {
     _id: manifest.name,
@@ -402,6 +461,141 @@ async function executeFullApply(
     `Applied frame "${manifest.name}" v${manifest.version} on "${instance.id}" (${writtenLabels.length} resource(s) written).`,
   );
   return 0;
+}
+
+/**
+ * KPR-105: merge untouched resources from a previous applied_frames record
+ * into the staged resources for the current drift-resolved apply.
+ *
+ * Drift-resolved applies only re-write resources flagged in
+ * `forceWriteResources`; resources without actionable drift this round are
+ * skipped. The staged record must still describe the frame's full footprint,
+ * so peer entries (e.g. other skill bundles, other agents' coreservers, other
+ * constitution anchors) are carried forward.
+ *
+ * Within a resource type, this round's freshly-resolved entries win for the
+ * keys they touch; the existing record fills in keys this round did not.
+ *
+ * Snapshot fields (`snapshotBefore`) on resource types that have them are
+ * preserved separately at write time (Task 1 / Task 2). This merge does NOT
+ * re-derive snapshotBefore — for resources fully carried over, the existing
+ * snapshot is used as-is; for resources where this round wrote a partial
+ * subset, the snapshot was already preserved when the staged entry was built.
+ */
+function mergeUntouchedResources(
+  staged: AppliedResources,
+  prior: AppliedResources,
+): void {
+  // skills: union by bundle name (this round wins on collision).
+  if (prior.skills) {
+    const writtenBundles = new Set((staged.skills ?? []).map((s) => s.bundle));
+    const carryover = prior.skills.filter((s) => !writtenBundles.has(s.bundle));
+    if (carryover.length > 0) {
+      staged.skills = [...(staged.skills ?? []), ...carryover];
+    }
+  }
+
+  // memorySeeds: union by (agent, contentHash).
+  if (prior.memorySeeds) {
+    const writtenIds = new Set(
+      (staged.memorySeeds ?? []).map((s) => `${s.agent}:${s.contentHash}`),
+    );
+    const carryover = prior.memorySeeds.filter(
+      (s) => !writtenIds.has(`${s.agent}:${s.contentHash}`),
+    );
+    if (carryover.length > 0) {
+      staged.memorySeeds = [...(staged.memorySeeds ?? []), ...carryover];
+    }
+  }
+
+  // coreservers: per-agent server list union (this round's list wins for the
+  // agents it touched; other agents carry forward).
+  if (prior.coreservers) {
+    const merged: Record<string, string[]> = { ...(staged.coreservers ?? {}) };
+    for (const [agentId, servers] of Object.entries(prior.coreservers)) {
+      const cur = merged[agentId];
+      if (cur === undefined) {
+        merged[agentId] = [...servers];
+        continue;
+      }
+      const curSet = new Set(cur);
+      const carryover = servers.filter((s) => !curSet.has(s));
+      if (carryover.length > 0) {
+        merged[agentId] = [...cur, ...carryover];
+      }
+    }
+    if (Object.keys(merged).length > 0) staged.coreservers = merged;
+  }
+
+  // schedule: per-agent entry list union by task name.
+  if (prior.schedule) {
+    const merged: Record<string, AppliedScheduleRecord[]> = {
+      ...(staged.schedule ?? {}),
+    };
+    for (const [agentId, entries] of Object.entries(prior.schedule)) {
+      const cur = merged[agentId];
+      if (cur === undefined) {
+        merged[agentId] = [...entries];
+        continue;
+      }
+      const curTasks = new Set(cur.map((e) => e.task));
+      const carryover = entries.filter((e) => !curTasks.has(e.task));
+      if (carryover.length > 0) {
+        merged[agentId] = [...cur, ...carryover];
+      }
+    }
+    if (Object.keys(merged).length > 0) staged.schedule = merged;
+  }
+
+  // prompts: per-agent { anchors, snapshotBefore, insertedText } union.
+  // For agents touched this round, snapshotBefore was already preserved
+  // from existing in Task 2; we union anchors + insertedText here.
+  if (prior.prompts) {
+    const merged: Record<
+      string,
+      { anchors: string[]; snapshotBefore: string; insertedText: Record<string, string> }
+    > = { ...(staged.prompts ?? {}) };
+    for (const [agentId, block] of Object.entries(prior.prompts)) {
+      const cur = merged[agentId];
+      if (!cur) {
+        merged[agentId] = {
+          anchors: [...block.anchors],
+          snapshotBefore: block.snapshotBefore,
+          insertedText: { ...block.insertedText },
+        };
+        continue;
+      }
+      const curAnchorSet = new Set(cur.anchors);
+      const carryAnchors = block.anchors.filter((a) => !curAnchorSet.has(a));
+      cur.anchors = [...cur.anchors, ...carryAnchors];
+      for (const [a, txt] of Object.entries(block.insertedText)) {
+        if (!(a in cur.insertedText)) cur.insertedText[a] = txt;
+      }
+    }
+    if (Object.keys(merged).length > 0) staged.prompts = merged;
+  }
+
+  // constitution: anchors + insertedText union; snapshotBefore already
+  // preserved in Task 1.
+  if (prior.constitution) {
+    const cur = staged.constitution;
+    if (!cur) {
+      staged.constitution = {
+        anchors: [...prior.constitution.anchors],
+        snapshotBefore: prior.constitution.snapshotBefore,
+        insertedText: { ...prior.constitution.insertedText },
+      };
+    } else {
+      const curAnchorSet = new Set(cur.anchors);
+      const carryAnchors = prior.constitution.anchors.filter(
+        (a) => !curAnchorSet.has(a),
+      );
+      cur.anchors = [...cur.anchors, ...carryAnchors];
+      for (const [a, txt] of Object.entries(prior.constitution.insertedText)) {
+        if (!(a in cur.insertedText)) cur.insertedText[a] = txt;
+      }
+    }
+  }
 }
 
 interface ReverseState {
@@ -835,4 +1029,4 @@ function sendSigusr1(servicePath: string): void {
 }
 
 // Re-export verifyAnchors for tests.
-export { verifyAnchors, resolveAgents, buildAdoptRecord, executeFullApply };
+export { verifyAnchors, resolveAgents, buildAdoptRecord, executeFullApply, runAdopt };
