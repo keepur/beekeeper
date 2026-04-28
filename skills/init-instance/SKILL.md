@@ -347,4 +347,31 @@ This is *not* the same idempotency contract as `tune-instance` (which expects cl
 
 ## Failure recovery
 
-[FILLED IN BY TASK 12]
+The skill recovers from seven common failure modes:
+
+1. **Operator abandons Phase 1 mid-interview.** No artifacts written; state stays `fresh`. Re-invocation starts from scratch.
+2. **Phase 3 review unparseable (2 consecutive ambiguous responses).** No artifacts written; state stays `fresh`. Re-invocation starts from scratch.
+3. **Phase 4 step fails before completion.** Steps that completed are durable; remaining are not. State becomes `partial`. Re-invocation routes to Phase 0's `partial` branch and offers resume vs redo (see Phase 0 → Branches → `partial`).
+4. **`bootstrap.sh` did not run.** OS-level deps missing (Mongo not running, Qdrant down, Ollama missing). Phase 0.5's dep check (see Phase 0) catches this before the interview; if Phase 0.5 was skipped or a dep dropped mid-run, Phase 4 step 4a or 4c fails on Mongo writes or frame apply, and the error message points the operator at re-running `bootstrap.sh`.
+5. **Frame `hive-baseline` not present** (KPR-86 not yet shipped, or operator on an older Beekeeper). Phase 2 cannot draft a frame application plan. Refuse with: `"init-instance requires KPR-86 (hive-baseline frame). Either install Beekeeper >=<version-with-baseline> or contact Keepur for a registry-distributed frame."` This is the implementation gate.
+6. **Concurrent invocation on the same instance.** Two Beekeeper sessions running `init-instance` against the same `<instance-id>` simultaneously. Phase 4 writes through `admin_save_*` MCP tools and `frame apply` primitives, which serialize at the Mongo layer; the second session's `detectInstanceState()` will see the first's writes and route to `partial`. This is benign — operator may get confused and can re-invoke; nothing corrupts.
+7. **Operator runs `tune-instance` on a partially initialized instance.** `tune-instance`'s frame audit will surface the partial frame application as drift; per `tune-instance` spec, this is reported informationally. The operator should finish `init-instance` first; the sibling skill does not block running on partial state but the output will be noisy.
+
+### Resume / redo dialog
+
+When `detectInstanceState()` returns `partial` (whether from a Phase 4 mid-run failure, a deferred Phase 3 piece, or operator-aborted resume), Phase 0 emits a dialog the operator answers conversationally:
+
+```
+This instance was partially initialized at <lastInitAppliedAt>.
+  Section 2:        <written | missing>
+  Frame baseline:   <applied | missing>
+  CoS agent def:    <seeded | missing>
+  Handoff memory:   <present | missing>
+
+Resume from where init left off, or redo from scratch?
+```
+
+- **Resume** → re-run Phase 1 only for the pieces that aren't durable yet, then Phase 2, Phase 3, and Phase 4 from the first missing step. Conversation context isn't replayable across sessions; the operator may re-answer interview questions for the unwritten pieces.
+- **Redo from scratch** → walk the four detail booleans and ask per-artifact destruction confirmation (same as `force re-init` on `completed` — see Idempotency); then proceed to Phase 1 fresh.
+
+The dialog cross-references Phase 0; do not duplicate the branch logic here.
