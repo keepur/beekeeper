@@ -89,6 +89,11 @@ async function main(): Promise<void> {
     return timingSafeEqual(provided, expected);
   }
 
+  function isLoopback(req: IncomingMessage): boolean {
+    const remote = req.socket.remoteAddress;
+    return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+  }
+
   function verifyDeviceToken(
     req: IncomingMessage,
   ): { device: BeekeeperDevice; user: string } | null {
@@ -319,6 +324,56 @@ async function main(): Promise<void> {
 
     // --- Admin API (Bearer BEEKEEPER_ADMIN_SECRET) ---
     const isAdmin = verifyAdmin(req);
+
+    // /admin/* — operator introspection endpoints. Loopback-only AND
+    // admin-secret-gated. The CLI (`beekeeper status` / `sessions list` /
+    // `capabilities`) reaches these over localhost. There is no remote
+    // surface for them — non-loopback callers get 403 even with a valid
+    // admin secret, so a leaked secret can't be used from off-box.
+    if (url.pathname.startsWith("/admin/")) {
+      if (!isLoopback(req)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Loopback-only endpoint" }));
+        return;
+      }
+      if (!isAdmin) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+
+      // GET /admin/sessions
+      if (req.method === "GET" && url.pathname === "/admin/sessions") {
+        try {
+          const sessions = sessionManager.getAdminSessions();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ sessions }));
+        } catch (err) {
+          log.error("GET /admin/sessions error", { error: String(err) });
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal server error" }));
+        }
+        return;
+      }
+
+      // GET /admin/capabilities
+      if (req.method === "GET" && url.pathname === "/admin/capabilities") {
+        try {
+          const entries = capabilities.listAdmin();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ capabilities: entries }));
+        } catch (err) {
+          log.error("GET /admin/capabilities error", { error: String(err) });
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal server error" }));
+        }
+        return;
+      }
+
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
 
     // POST /devices
     if (req.method === "POST" && url.pathname === "/devices") {

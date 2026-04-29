@@ -1445,4 +1445,50 @@ describe("SessionManager", () => {
       expect(commands.get("pipeline-tick")?.description).toMatch(/pipeline-tick/i);
     });
   });
+
+  describe("getAdminSessions()", () => {
+    it("returns empty array when no sessions exist", () => {
+      const manager = new SessionManager(makeConfig(), guardian, questionRelayer);
+      expect(manager.getAdminSessions()).toEqual([]);
+    });
+
+    it("returns sessions sorted by sessionId with admin-only timing fields", async () => {
+      // Admin view extends getActiveSessions with queryStartedAt and
+      // lastActivityAt. The CLI's `beekeeper sessions list` renders these as
+      // relative ages.
+      const ws = makeMockWs();
+      const manager = new SessionManager(makeConfig(), guardian, questionRelayer);
+      manager.addClient("test-device", "mokie", ws as never);
+
+      mockQueryIterator.mockReturnValueOnce(
+        makeAsyncIterable([
+          { type: "system", subtype: "init", session_id: "sess-z" },
+          { type: "result", subtype: "success", result: "", session_id: "sess-z", total_cost_usd: 0, duration_ms: 10 },
+        ]),
+      );
+      const idZ = await manager.newSession("/home/user/z");
+      await drainWelcome(manager, idZ);
+
+      mockQueryIterator.mockReturnValueOnce(
+        makeAsyncIterable([
+          { type: "system", subtype: "init", session_id: "sess-a" },
+          { type: "result", subtype: "success", result: "", session_id: "sess-a", total_cost_usd: 0, duration_ms: 10 },
+        ]),
+      );
+      const idA = await manager.newSession("/home/user/a");
+      await drainWelcome(manager, idA);
+
+      const admin = manager.getAdminSessions();
+      expect(admin.map((s) => s.sessionId)).toEqual(["sess-a", "sess-z"]);
+      expect(admin[0]).toMatchObject({
+        sessionId: "sess-a",
+        path: "/home/user/a",
+        state: "idle",
+      });
+      expect(admin[0].lastActivityAt).toBeGreaterThan(0);
+      // Idle sessions report null queryStartedAt — the field is non-null only
+      // while a query is in flight.
+      expect(admin[0].queryStartedAt).toBeNull();
+    });
+  });
 });

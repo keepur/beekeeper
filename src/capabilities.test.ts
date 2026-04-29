@@ -128,6 +128,38 @@ describe("CapabilityManifest", () => {
     });
   });
 
+  describe("listAdmin()", () => {
+    it("returns empty array when nothing registered", () => {
+      // Unlike `list()`, listAdmin omits the implicit `beekeeper` entry —
+      // operators using this know beekeeper is the host.
+      expect(manifest.listAdmin()).toEqual([]);
+    });
+
+    it("returns full entries sorted by name", () => {
+      manifest.register({
+        name: "hive",
+        localWsUrl: "ws://127.0.0.1:4001/ws",
+        healthUrl: "http://127.0.0.1:4001/health",
+      });
+      manifest.register({
+        name: "archive",
+        localWsUrl: "ws://127.0.0.1:4002/ws",
+        healthUrl: "http://127.0.0.1:4002/health",
+      });
+
+      const entries = manifest.listAdmin();
+      expect(entries.map((e) => e.name)).toEqual(["archive", "hive"]);
+      // Carries the operational metadata the CLI renders.
+      expect(entries[0]).toMatchObject({
+        name: "archive",
+        localWsUrl: "ws://127.0.0.1:4002/ws",
+        healthUrl: "http://127.0.0.1:4002/health",
+        consecutiveFailures: 0,
+      });
+      expect(entries[0].addedAt).toBeGreaterThan(0);
+    });
+  });
+
   describe("health loop", () => {
     it("drops capability after reaching failure threshold", async () => {
       const fetchMock = vi.fn().mockResolvedValue({ ok: false });

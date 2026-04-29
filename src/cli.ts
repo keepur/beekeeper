@@ -17,6 +17,12 @@ SERVICE
   uninstall                  Remove the LaunchAgent
   serve                      Run the gateway in the foreground (dev only)
 
+INTROSPECTION (queries the running daemon)
+  status                     Gateway health (no admin secret needed)
+  sessions list              List active Claude Code sessions
+  devices list               List registered devices
+  capabilities               List sibling capabilities (Hive, etc.)
+
 USERS & DEVICES
   user list                  List registered users
   user add <id> <display>    Add a user
@@ -36,7 +42,9 @@ OTHER
 
 The gateway runs as a macOS LaunchAgent (io.keepur.beekeeperd). It is started
 by launchd, not by this CLI. To run it in the foreground for development, use
-\`beekeeper serve\`.`);
+\`beekeeper serve\`.
+
+Introspection commands accept --json to emit raw response bodies.`);
 }
 
 function printVersion(): void {
@@ -226,6 +234,64 @@ switch (command) {
   case "serve": {
     // Foreground daemon — for dev only. launchd uses dist/index.js directly.
     await import("./index.js");
+    break;
+  }
+  case "status": {
+    let exit = 0;
+    try {
+      const { runStatus } = await import("./cli/admin-commands.js");
+      exit = await runStatus(process.argv.slice(3));
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "sessions": {
+    const sub = process.argv[3];
+    if (sub !== "list") {
+      console.error("Usage: beekeeper sessions list [--json]");
+      process.exit(1);
+    }
+    let exit = 0;
+    try {
+      const { runSessionsList } = await import("./cli/admin-commands.js");
+      exit = await runSessionsList(process.argv.slice(4));
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "devices": {
+    const sub = process.argv[3];
+    if (sub !== "list") {
+      console.error("Usage: beekeeper devices list [--json]");
+      process.exit(1);
+    }
+    let exit = 0;
+    try {
+      const { runDevicesList } = await import("./cli/admin-commands.js");
+      exit = await runDevicesList(process.argv.slice(4));
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "capabilities": {
+    let exit = 0;
+    try {
+      const { runCapabilitiesList } = await import("./cli/admin-commands.js");
+      exit = await runCapabilitiesList(process.argv.slice(3));
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
     break;
   }
   default: {
