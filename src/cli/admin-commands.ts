@@ -1,4 +1,4 @@
-import { adminGet, formatAge, loadAdminContext, renderTable } from "./admin-client.js";
+import { adminGet, formatAge, renderTable, type AdminContext } from "./admin-client.js";
 
 interface HealthResponse {
   status: string;
@@ -48,8 +48,7 @@ function wantsJson(args: string[]): boolean {
   return args.includes("--json");
 }
 
-export async function runStatus(args: string[]): Promise<number> {
-  const ctx = loadAdminContext();
+export async function runStatus(args: string[], ctx: AdminContext): Promise<number> {
   // /health is public — no admin auth needed.
   const data = await adminGet<HealthResponse>(ctx, "/health", { auth: false });
   if (wantsJson(args)) {
@@ -62,8 +61,7 @@ export async function runStatus(args: string[]): Promise<number> {
   return 0;
 }
 
-export async function runSessionsList(args: string[]): Promise<number> {
-  const ctx = loadAdminContext();
+export async function runSessionsList(args: string[], ctx: AdminContext): Promise<number> {
   const data = await adminGet<AdminSessionsResponse>(ctx, "/admin/sessions");
   if (wantsJson(args)) {
     console.log(JSON.stringify(data, null, 2));
@@ -81,8 +79,7 @@ export async function runSessionsList(args: string[]): Promise<number> {
   return 0;
 }
 
-export async function runDevicesList(args: string[]): Promise<number> {
-  const ctx = loadAdminContext();
+export async function runDevicesList(args: string[], ctx: AdminContext): Promise<number> {
   // The existing /devices endpoint serves admin device-list duty and is what
   // the CLI calls — there is no /admin/devices alias.
   const data = await adminGet<AdminDevice[]>(ctx, "/devices");
@@ -104,8 +101,7 @@ export async function runDevicesList(args: string[]): Promise<number> {
   return 0;
 }
 
-export async function runCapabilitiesList(args: string[]): Promise<number> {
-  const ctx = loadAdminContext();
+export async function runCapabilitiesList(args: string[], ctx: AdminContext): Promise<number> {
   const data = await adminGet<AdminCapabilitiesResponse>(ctx, "/admin/capabilities");
   if (wantsJson(args)) {
     console.log(JSON.stringify(data, null, 2));

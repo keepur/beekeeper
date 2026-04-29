@@ -216,17 +216,24 @@ ${envVarsXml}  <key>RunAtLoad</key>
  * Run this BEFORE writing the new plist so we never leave two LaunchAgents
  * fighting for :8420. Idempotent and silent when the legacy plist doesn't
  * exist.
+ *
+ * Exported and parameterized for tests — production callers can pass nothing
+ * and get the real `~/Library/LaunchAgents` path.
  */
-function removeLegacyPlist(): void {
-  const legacyPath = join(homedir(), "Library", "LaunchAgents", `${LEGACY_LABEL}.plist`);
-  if (!existsSync(legacyPath)) return;
+export function removeLegacyPlist(
+  plistDir: string = join(homedir(), "Library", "LaunchAgents"),
+): { removed: boolean; path: string } {
+  const legacyPath = join(plistDir, `${LEGACY_LABEL}.plist`);
+  if (!existsSync(legacyPath)) return { removed: false, path: legacyPath };
   spawnSync("launchctl", ["unload", legacyPath], { stdio: "ignore" });
   try {
     unlinkSync(legacyPath);
     log.info("Legacy plist removed", { path: legacyPath, legacyLabel: LEGACY_LABEL });
     console.log(`Removed legacy LaunchAgent: ${legacyPath}`);
+    return { removed: true, path: legacyPath };
   } catch (err) {
     log.warn("Failed to remove legacy plist", { error: err instanceof Error ? err.message : String(err) });
+    return { removed: false, path: legacyPath };
   }
 }
 

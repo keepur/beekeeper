@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { dirname, join, resolve } from "node:path";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { generatePlist, seedConfigIfMissing } from "./generate-plist.js";
+import { generatePlist, removeLegacyPlist, seedConfigIfMissing } from "./generate-plist.js";
 
 describe("generatePlist", () => {
   const baseOptions = {
@@ -132,5 +132,45 @@ describe("wrapper-script resolution", () => {
     // This is the load-bearing invariant: bin/ is a child of the same
     // repo root that contains src/ (and after build, dist/).
     expect(dirname(binDir)).toBe(dirname(srcDir));
+  });
+});
+
+describe("removeLegacyPlist", () => {
+  it("returns removed=false silently when the legacy plist does not exist", () => {
+    // Using a fresh tmp dir guarantees no plist is present. Production
+    // callers will hit this path on every install after the first one.
+    const dir = mkdtempSync(join(tmpdir(), "bk-plist-"));
+    const result = removeLegacyPlist(dir);
+    expect(result.removed).toBe(false);
+    expect(result.path).toBe(join(dir, "io.keepur.beekeeper.plist"));
+  });
+
+  it("unlinks the legacy plist and returns removed=true when it exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bk-plist-"));
+    mkdirSync(dir, { recursive: true });
+    const legacyPath = join(dir, "io.keepur.beekeeper.plist");
+    writeFileSync(legacyPath, "<!-- pre-1.2 plist -->");
+    expect(existsSync(legacyPath)).toBe(true);
+
+    const result = removeLegacyPlist(dir);
+    expect(result.removed).toBe(true);
+    expect(result.path).toBe(legacyPath);
+    // File must actually be gone — otherwise the new plist would race
+    // with the old one for :8420 on the next launchctl load.
+    expect(existsSync(legacyPath)).toBe(false);
+  });
+
+  it("only touches the legacy label, not the new beekeeperd plist", () => {
+    // Critical safety: removing the legacy must NOT remove
+    // io.keepur.beekeeperd.plist sitting in the same directory.
+    const dir = mkdtempSync(join(tmpdir(), "bk-plist-"));
+    const legacyPath = join(dir, "io.keepur.beekeeper.plist");
+    const newPath = join(dir, "io.keepur.beekeeperd.plist");
+    writeFileSync(legacyPath, "legacy");
+    writeFileSync(newPath, "new");
+
+    removeLegacyPlist(dir);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(newPath)).toBe(true);
   });
 });

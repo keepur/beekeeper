@@ -239,8 +239,9 @@ switch (command) {
   case "status": {
     let exit = 0;
     try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
       const { runStatus } = await import("./cli/admin-commands.js");
-      exit = await runStatus(process.argv.slice(3));
+      exit = await runStatus(process.argv.slice(3), loadAdminContext());
     } catch (err: unknown) {
       console.error(err instanceof Error ? err.message : String(err));
       exit = 1;
@@ -256,8 +257,9 @@ switch (command) {
     }
     let exit = 0;
     try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
       const { runSessionsList } = await import("./cli/admin-commands.js");
-      exit = await runSessionsList(process.argv.slice(4));
+      exit = await runSessionsList(process.argv.slice(4), loadAdminContext());
     } catch (err: unknown) {
       console.error(err instanceof Error ? err.message : String(err));
       exit = 1;
@@ -273,8 +275,9 @@ switch (command) {
     }
     let exit = 0;
     try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
       const { runDevicesList } = await import("./cli/admin-commands.js");
-      exit = await runDevicesList(process.argv.slice(4));
+      exit = await runDevicesList(process.argv.slice(4), loadAdminContext());
     } catch (err: unknown) {
       console.error(err instanceof Error ? err.message : String(err));
       exit = 1;
@@ -285,8 +288,9 @@ switch (command) {
   case "capabilities": {
     let exit = 0;
     try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
       const { runCapabilitiesList } = await import("./cli/admin-commands.js");
-      exit = await runCapabilitiesList(process.argv.slice(3));
+      exit = await runCapabilitiesList(process.argv.slice(3), loadAdminContext());
     } catch (err: unknown) {
       console.error(err instanceof Error ? err.message : String(err));
       exit = 1;
