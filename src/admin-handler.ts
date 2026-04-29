@@ -16,6 +16,15 @@ export interface AdminHandlerDeps {
  * Bearer-token check using constant-time comparison. Both sides are encoded
  * as buffers so a length mismatch can't leak through `timingSafeEqual` (which
  * throws on mismatched lengths).
+ *
+ * Assumes ASCII secrets. `Buffer.from(string)` defaults to UTF-8, so a
+ * non-ASCII char in either side encodes to multiple bytes — both sides go
+ * through the same encoding so they stay byte-aligned, but a string-length
+ * comparison would diverge from the byte-length check. We compare byte
+ * lengths (`provided.length`) which is the right thing for `timingSafeEqual`.
+ * The honeypot/env-file path that supplies BEEKEEPER_ADMIN_SECRET produces
+ * ASCII secrets in practice; an operator who sets a non-ASCII secret will
+ * still authenticate successfully because both sides encode identically.
  */
 function verifyAdminBearer(req: IncomingMessage, adminSecret: string): boolean {
   const auth = req.headers.authorization;

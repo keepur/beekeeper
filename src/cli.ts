@@ -299,9 +299,19 @@ switch (command) {
     break;
   }
   default: {
-    console.error(`Unknown command: ${command}`);
-    console.error("");
-    printHelp();
+    // Unknown command: send the entire error block (heading + blank +
+    // help) to stderr so a script doing `beekeeper foo 2>/dev/null` gets
+    // nothing on stdout. printHelp() defaults to stdout (the regular
+    // `beekeeper help` flow), so we override the channel here.
+    const original = console.log;
+    console.log = console.error;
+    try {
+      console.error(`Unknown command: ${command}`);
+      console.error("");
+      printHelp();
+    } finally {
+      console.log = original;
+    }
     process.exit(1);
   }
 }

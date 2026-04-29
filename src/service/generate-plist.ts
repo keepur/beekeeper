@@ -225,7 +225,22 @@ export function removeLegacyPlist(
 ): { removed: boolean; path: string } {
   const legacyPath = join(plistDir, `${LEGACY_LABEL}.plist`);
   if (!existsSync(legacyPath)) return { removed: false, path: legacyPath };
-  spawnSync("launchctl", ["unload", legacyPath], { stdio: "ignore" });
+  // Capture launchctl's status: if the legacy daemon is currently loaded and
+  // unload fails, we still unlink the plist below — but the daemon stays
+  // running and would race :8420 with the new one. Surface that so an
+  // operator can `launchctl bootout` it manually before kickstarting the
+  // new label. We don't throw because the more common case is "plist exists
+  // but isn't loaded," where launchctl exits non-zero harmlessly.
+  const unload = spawnSync("launchctl", ["unload", legacyPath], { stdio: "ignore" });
+  if (unload.status !== 0) {
+    log.warn("launchctl unload of legacy plist returned non-zero", {
+      path: legacyPath,
+      status: unload.status,
+    });
+    console.log(
+      `Note: launchctl unload ${legacyPath} returned ${unload.status} — if the legacy daemon is still running, stop it manually before kickstarting io.keepur.beekeeperd.`,
+    );
+  }
   try {
     unlinkSync(legacyPath);
     log.info("Legacy plist removed", { path: legacyPath, legacyLabel: LEGACY_LABEL });
