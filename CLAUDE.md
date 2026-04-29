@@ -19,7 +19,12 @@ Tests live beside the source they cover (`src/foo.ts` ↔ `src/foo.test.ts`). No
 
 ## Architecture
 
-Beekeeper is a WebSocket gateway fronting two protocols over a single public port (default 8420). Entry point `src/index.ts` owns the HTTP server (REST API for pairing / device admin / capability registration) and the `WebSocketServer` that handles upgrades.
+Beekeeper ships two binaries:
+
+- **`beekeeperd`** (`dist/index.js`) — the gateway daemon. Owned by launchd; never invoked by hand outside `beekeeper serve` (dev foreground mode).
+- **`beekeeper`** (`dist/cli.js`) — the operator CLI. Subcommands either touch shared state (SQLite registry, config files, frames) or speak HTTP over loopback to the running daemon's admin endpoints. Never starts the daemon.
+
+The daemon is a WebSocket gateway fronting two protocols over a single public port (default 8420). Entry point `src/index.ts` owns the HTTP server (REST API for pairing / device admin / capability registration / admin introspection) and the `WebSocketServer` that handles upgrades.
 
 ### Two channels, one port
 
@@ -44,7 +49,7 @@ SQLite via `better-sqlite3` (WAL mode, synchronous). Schema lives in `open()`. J
 
 ### LaunchAgent install (`src/service/generate-plist.ts`)
 
-`beekeeper install <configDir>` generates a macOS LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeper.plist`. If `<configDir>/env` exists at install time, install operates in **wrapper mode**: writes a shell wrapper to `<repoRoot>/bin/start.sh` that sources the env file and execs node, and points `ProgramArguments` at the wrapper. Otherwise, **direct mode**: the plist runs node directly with just `BEEKEEPER_CONFIG` in `EnvironmentVariables`. Wrapper mode is strongly preferred because it keeps secrets out of the plist and is safely idempotent. Install is always safe to re-run — both the wrapper and the plist are regenerated from scratch.
+`beekeeper install <configDir>` generates a macOS LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeperd.plist`. If `<configDir>/env` exists at install time, install operates in **wrapper mode**: writes a shell wrapper to `<repoRoot>/bin/start.sh` that sources the env file and execs node, and points `ProgramArguments` at the wrapper. Otherwise, **direct mode**: the plist runs node directly with just `BEEKEEPER_CONFIG` in `EnvironmentVariables`. Wrapper mode is strongly preferred because it keeps secrets out of the plist and is safely idempotent. Install is always safe to re-run — both the wrapper and the plist are regenerated from scratch. Pre-1.2 installs used the label `io.keepur.beekeeper` (no trailing "d"); install/uninstall both clean up that legacy plist if present so an upgrader doesn't end up with two LaunchAgents fighting for :8420.
 
 ## Gotchas / traps (write these down, don't re-learn them)
 

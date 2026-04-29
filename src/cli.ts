@@ -1,8 +1,60 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const command = process.argv[2];
+
+function printHelp(): void {
+  console.log(`beekeeper — operator CLI for the Beekeeper gateway
+
+USAGE
+  beekeeper <command> [args]
+
+SERVICE
+  install [<configDir>]      Install the LaunchAgent (~/.beekeeper by default)
+  uninstall                  Remove the LaunchAgent
+  serve                      Run the gateway in the foreground (dev only)
+
+USERS & DEVICES
+  user list                  List registered users
+  user add <id> <display>    Add a user
+  user rm <id>               Deactivate a user
+  pair <user> [label]        Issue a pairing code for a device
+
+INSTANCES
+  frame <subcommand>         Manage instance frames (apply / render / etc.)
+  init-state <instance>      Detect a Hive instance's init state
+
+PIPELINE
+  pipeline-tick <scope>      Run a Linear pipeline tick
+
+OTHER
+  help                       Show this help
+  version                    Show the installed version
+
+The gateway runs as a macOS LaunchAgent (io.keepur.beekeeperd). It is started
+by launchd, not by this CLI. To run it in the foreground for development, use
+\`beekeeper serve\`.`);
+}
+
+function printVersion(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgPath = resolve(here, "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+  console.log(pkg.version ?? "unknown");
+}
+
+if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+  printHelp();
+  process.exit(0);
+}
+
+if (command === "version" || command === "--version" || command === "-v") {
+  printVersion();
+  process.exit(0);
+}
 
 switch (command) {
   case "install": {
@@ -171,7 +223,15 @@ switch (command) {
     if (result.exitCode) process.exit(result.exitCode);
     break;
   }
-  default:
-    // No command — start the server
+  case "serve": {
+    // Foreground daemon — for dev only. launchd uses dist/index.js directly.
     await import("./index.js");
+    break;
+  }
+  default: {
+    console.error(`Unknown command: ${command}`);
+    console.error("");
+    printHelp();
+    process.exit(1);
+  }
 }

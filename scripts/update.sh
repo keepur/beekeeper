@@ -12,7 +12,7 @@
 #
 # Environment:
 #   BEEKEEPER_LABEL          LaunchAgent label to kickstart
-#                            (default: io.keepur.beekeeper)
+#                            (default: io.keepur.beekeeperd)
 #   BEEKEEPER_UPDATE_BRANCH  Branch that must be checked out for updates
 #                            to proceed (default: main). Override if you
 #                            intentionally track a non-main branch.
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 CONFIG_DIR="${1:-$HOME/.beekeeper}"
-LABEL="${BEEKEEPER_LABEL:-io.keepur.beekeeper}"
+LABEL="${BEEKEEPER_LABEL:-io.keepur.beekeeperd}"
 EXPECTED_BRANCH="${BEEKEEPER_UPDATE_BRANCH:-main}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

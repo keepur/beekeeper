@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import "dotenv/config";
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
