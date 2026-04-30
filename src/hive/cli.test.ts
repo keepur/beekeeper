@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 vi.mock("../logging/logger.js", () => ({
   createLogger: () => ({
@@ -93,5 +96,56 @@ describe("runHiveCli", () => {
     expect(out).toContain("INSTANCE");
     expect(out).toContain("dodi");
     expect(out).toContain("keepur");
+  });
+
+  it("`hive setup` calls into setup() and returns 0 on the happy path", async () => {
+    // Mirror the cli.ts wiring path — we want to know the CLI layer
+    // doesn't drop errors or mis-propagate exit codes.
+    const cacheRoot = mkdtempSync(join(tmpdir(), "bk-cli-setup-"));
+    const launchClaude = vi.fn();
+    const lifecycleEnv = {
+      fetchPackument: async () => ({
+        version: "1.0.0",
+        tarballUrl: "https://example.test/x.tgz",
+        integrity: "sha512-stub",
+      }),
+      downloadFile: async () => {},
+      verifyIntegrity: async () => {},
+      extractTarball: (_t: string, destDir: string) => {
+        mkdirSync(join(destDir, "package"), { recursive: true });
+        writeFileSync(join(destDir, "package", "CLAUDE.md"), "");
+      },
+      launchClaude,
+      listInstances: () => [],
+      cacheRoot,
+    };
+
+    const { runHiveCli } = await import("./cli.js");
+    const code = await runHiveCli(["setup"], { lifecycleEnv });
+
+    expect(code).toBe(0);
+    expect(launchClaude).toHaveBeenCalledTimes(1);
+  });
+
+  it("`hive setup` short-circuits when an existing instance is detected (no Claude launch)", async () => {
+    const launchClaude = vi.fn();
+    const lifecycleEnv = {
+      fetchPackument: async () => {
+        throw new Error("should not fetch when short-circuiting");
+      },
+      downloadFile: async () => {},
+      verifyIntegrity: async () => {},
+      extractTarball: () => {},
+      launchClaude,
+      listInstances: () => [{ id: "dodi", path: "/x", version: "0.3.0", running: true, port: 3200 }],
+      cacheRoot: "/tmp/never-touched",
+    };
+
+    const { runHiveCli } = await import("./cli.js");
+    const code = await runHiveCli(["setup"], { lifecycleEnv });
+
+    expect(code).toBe(0);
+    expect(launchClaude).not.toHaveBeenCalled();
+    expect(logged()).toContain("Found existing instance: dodi");
   });
 });

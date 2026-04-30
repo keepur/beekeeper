@@ -19,7 +19,9 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -44,6 +46,15 @@ const log = createLogger("beekeeper-hive-lifecycle");
 export interface HivePackumentSlice {
   version: string;
   tarballUrl: string;
+  /**
+   * SRI integrity string from `dist.integrity`, e.g.
+   * `"sha512-<base64>"`. Used to verify the tarball before extraction.
+   * Optional only because the registry historically returned a different
+   * field; in practice every `latest` packument carries it today, and the
+   * verifier treats a missing integrity as a setup-time error so we don't
+   * silently extract unverified content.
+   */
+  integrity?: string;
 }
 
 /** Fetcher contract — tests inject mocks. */
@@ -52,6 +63,11 @@ export interface LifecycleEnv {
   fetchPackument: () => Promise<HivePackumentSlice>;
   /** Stream a remote URL into a local file. */
   downloadFile: (url: string, destPath: string) => Promise<void>;
+  /**
+   * Verify a downloaded tarball against the SRI integrity string from npm.
+   * Throws on mismatch (or unsupported algorithm). Tests stub to a no-op.
+   */
+  verifyIntegrity: (tarballPath: string, integrity: string) => Promise<void>;
   /** Extract a tarball into a target directory; throws on non-zero exit. */
   extractTarball: (tarballPath: string, destDir: string) => void;
   /** Spawn Claude Code rooted at cwd. Returns immediately (detached-ish). */
@@ -65,6 +81,7 @@ export interface LifecycleEnv {
 export const defaultLifecycleEnv: LifecycleEnv = {
   fetchPackument: defaultFetchPackument,
   downloadFile: defaultDownloadFile,
+  verifyIntegrity: defaultVerifyIntegrity,
   extractTarball: defaultExtractTarball,
   launchClaude: defaultLaunchClaude,
   listInstances: () => discoverHiveInstances(),
@@ -126,9 +143,16 @@ export async function setup(
     console.log(`Cache hit: ${packageDir}`);
     reusedCache = true;
   } else {
+    if (!pkt.integrity) {
+      throw new Error(
+        "npm registry response missing dist.integrity — refusing to extract an unverified tarball.",
+      );
+    }
     mkdirSync(versionDir, { recursive: true });
     console.log(`Downloading tarball → ${tarballPath}`);
     await env.downloadFile(pkt.tarballUrl, tarballPath);
+    console.log(`Verifying tarball integrity (${pkt.integrity.split("-")[0]})…`);
+    await env.verifyIntegrity(tarballPath, pkt.integrity);
     console.log(`Extracting → ${packageDir}`);
     env.extractTarball(tarballPath, versionDir);
   }
@@ -191,11 +215,44 @@ async function defaultFetchPackument(): Promise<HivePackumentSlice> {
   if (!res.ok) {
     throw new Error(`npm registry returned ${res.status} ${res.statusText} for ${url}`);
   }
-  const body = (await res.json()) as { version?: unknown; dist?: { tarball?: unknown } };
+  const body = (await res.json()) as {
+    version?: unknown;
+    dist?: { tarball?: unknown; integrity?: unknown };
+  };
   if (typeof body.version !== "string" || typeof body.dist?.tarball !== "string") {
     throw new Error(`Unexpected npm registry response shape from ${url}`);
   }
-  return { version: body.version, tarballUrl: body.dist.tarball };
+  const integrity = typeof body.dist.integrity === "string" ? body.dist.integrity : undefined;
+  return { version: body.version, tarballUrl: body.dist.tarball, integrity };
+}
+
+/**
+ * Verify a downloaded tarball against an npm SRI integrity string.
+ * Streams the file through a hash so we don't buffer 8MB+ in memory.
+ *
+ * The SRI format is `<algo>-<base64>`; npm currently emits `sha512-...`
+ * for new publishes. We support sha512 and sha256 (older packuments)
+ * and reject anything else outright — silently accepting an unknown
+ * algo would defeat the point.
+ */
+async function defaultVerifyIntegrity(tarballPath: string, integrity: string): Promise<void> {
+  const idx = integrity.indexOf("-");
+  if (idx <= 0) throw new Error(`Malformed integrity string: ${integrity}`);
+  const algo = integrity.slice(0, idx);
+  const expected = integrity.slice(idx + 1);
+  if (algo !== "sha512" && algo !== "sha256") {
+    throw new Error(
+      `Unsupported integrity algorithm "${algo}" — refusing to skip verification.`,
+    );
+  }
+  const hash = createHash(algo);
+  await pipeline(createReadStream(tarballPath), hash);
+  const actual = hash.digest("base64");
+  if (actual !== expected) {
+    throw new Error(
+      `Tarball ${tarballPath} failed ${algo} integrity check (expected ${expected}, got ${actual}). Delete the file and retry; if it persists, check your network for tampering.`,
+    );
+  }
 }
 
 async function defaultDownloadFile(url: string, destPath: string): Promise<void> {
@@ -228,19 +285,27 @@ function defaultExtractTarball(tarballPath: string, destDir: string): void {
 }
 
 function defaultLaunchClaude(cwd: string): void {
-  // Spawn detached + stdio:inherit so Claude Code takes over the operator's
-  // terminal and survives our process exit. We don't await; we don't unref
-  // either, because the parent is exiting right after — we want the child
-  // attached to the TTY for the operator's session.
+  // Pre-flight ENOENT check: spawn's "error" event is asynchronous and the
+  // surrounding setup() has already returned by the time it fires, so an
+  // operator without Claude Code installed would otherwise see no message.
+  // `which` is on the macOS minimum install; non-zero exit means PATH miss.
+  const which = spawnSync("/usr/bin/which", ["claude"], { stdio: "ignore" });
+  if (which.status !== 0) {
+    console.error(
+      "claude (Claude Code CLI) was not found on PATH. Install it from https://docs.claude.com/en/docs/agents-and-tools/claude-code/quickstart and re-run.",
+    );
+    process.exit(1);
+  }
+
+  // stdio:inherit hands the operator's TTY to Claude Code. We deliberately
+  // do NOT pass `detached: true` and do NOT call `child.unref()` — the
+  // parent node process blocks here until Claude Code exits, which is the
+  // right behavior for an interactive session. The "error" handler below
+  // covers the ENOENT race only as a backstop; the pre-flight `which`
+  // above is the primary line of defense.
   const child = spawn("claude", [], { cwd, stdio: "inherit" });
   child.on("error", (err) => {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      console.error(
-        "claude (Claude Code CLI) was not found on PATH. Install it from https://docs.claude.com/en/docs/agents-and-tools/claude-code/quickstart and re-run.",
-      );
-    } else {
-      console.error(`Failed to launch Claude Code: ${err.message}`);
-    }
+    console.error(`Failed to launch Claude Code: ${err.message}`);
     process.exit(1);
   });
 }

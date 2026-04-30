@@ -31,10 +31,15 @@ function makeEnv(overrides: Partial<LifecycleEnv>): LifecycleEnv {
     fetchPackument: async () => ({
       version: "1.0.0",
       tarballUrl: "https://example.test/keepur-hive-1.0.0.tgz",
+      // Stub integrity — verifyIntegrity in the test env is a no-op, so
+      // the value isn't validated, but it must be present so setup()
+      // doesn't reject the packument.
+      integrity: "sha512-stub",
     }),
     downloadFile: async (_url, dest) => {
       writeFileSync(dest, "stub-tarball");
     },
+    verifyIntegrity: vi.fn(async () => {}),
     extractTarball: (_tarballPath, destDir) => {
       // Mimic npm tar layout — extraction creates ./package/ inside destDir.
       const pkg = join(destDir, "package");
@@ -74,6 +79,62 @@ describe("setup — fresh install path", () => {
     // Claude Code is launched rooted at the cache dir.
     expect(launchClaude).toHaveBeenCalledTimes(1);
     expect(launchClaude).toHaveBeenCalledWith(join(env.cacheRoot, "1.0.0"));
+  });
+
+  it("verifies tarball integrity AFTER download and BEFORE extract", async () => {
+    // Order is load-bearing: extract before verify would let a tampered
+    // tarball execute its contents (or at least drop them on disk) before
+    // we'd notice. The order assertion catches a refactor that flips them.
+    const order: string[] = [];
+    const env = makeEnv({
+      downloadFile: async (_url, dest) => {
+        order.push("download");
+        writeFileSync(dest, "stub-tarball");
+      },
+      verifyIntegrity: vi.fn(async () => {
+        order.push("verify");
+      }),
+      extractTarball: (_tarballPath, destDir) => {
+        order.push("extract");
+        const pkg = join(destDir, "package");
+        mkdirSync(pkg, { recursive: true });
+      },
+    });
+
+    await setup({}, env);
+
+    expect(order).toEqual(["download", "verify", "extract"]);
+  });
+
+  it("propagates integrity-check failure as a thrown error (no extract, no Claude launch)", async () => {
+    const launchClaude = vi.fn();
+    const extractTarball = vi.fn();
+    const env = makeEnv({
+      launchClaude,
+      extractTarball,
+      verifyIntegrity: vi.fn(async () => {
+        throw new Error("integrity mismatch");
+      }),
+    });
+
+    await expect(setup({}, env)).rejects.toThrow(/integrity mismatch/);
+    expect(extractTarball).not.toHaveBeenCalled();
+    expect(launchClaude).not.toHaveBeenCalled();
+  });
+
+  it("rejects packuments missing dist.integrity rather than silently extracting", async () => {
+    // The npm registry has emitted dist.integrity for years. A response
+    // missing it is suspicious — abort with an actionable message rather
+    // than skip verification.
+    const env = makeEnv({
+      fetchPackument: async () => ({
+        version: "1.0.0",
+        tarballUrl: "https://example.test/x.tgz",
+        // integrity intentionally omitted
+      }),
+    });
+
+    await expect(setup({}, env)).rejects.toThrow(/missing dist\.integrity/);
   });
 
   it("re-uses an already-extracted cache for the same version (no double download)", async () => {
@@ -150,6 +211,60 @@ describe("setup — existing-install short-circuit", () => {
     await setup({}, env);
 
     expect(launchClaude).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("defaultVerifyIntegrity (real implementation)", () => {
+  // Imports the real default rather than a stub so we exercise the
+  // crypto + stream pipeline. Without this, the production verifier
+  // could regress silently (every other lifecycle test injects a no-op).
+  it("accepts a tarball whose sha512 matches the integrity string", async () => {
+    const { defaultLifecycleEnv } = await import("./lifecycle.js");
+    const tmp = mkdtempSync(join(tmpdir(), "bk-int-"));
+    const tarball = join(tmp, "x.tgz");
+    writeFileSync(tarball, "the-real-bytes");
+    // Compute the expected sha512 ourselves so the test is self-contained.
+    const { createHash } = await import("node:crypto");
+    const expected = createHash("sha512").update("the-real-bytes").digest("base64");
+
+    await expect(
+      defaultLifecycleEnv.verifyIntegrity(tarball, `sha512-${expected}`),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a tarball whose hash doesn't match", async () => {
+    const { defaultLifecycleEnv } = await import("./lifecycle.js");
+    const tmp = mkdtempSync(join(tmpdir(), "bk-int-"));
+    const tarball = join(tmp, "x.tgz");
+    writeFileSync(tarball, "tampered-bytes");
+
+    await expect(
+      defaultLifecycleEnv.verifyIntegrity(tarball, "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+    ).rejects.toThrow(/integrity check/);
+  });
+
+  it("rejects an unsupported algorithm rather than skipping verification", async () => {
+    const { defaultLifecycleEnv } = await import("./lifecycle.js");
+    const tmp = mkdtempSync(join(tmpdir(), "bk-int-"));
+    const tarball = join(tmp, "x.tgz");
+    writeFileSync(tarball, "x");
+
+    await expect(
+      defaultLifecycleEnv.verifyIntegrity(tarball, "md5-asdf"),
+    ).rejects.toThrow(/Unsupported integrity algorithm/);
+  });
+
+  it("rejects a malformed integrity string with no algorithm separator", async () => {
+    const { defaultLifecycleEnv } = await import("./lifecycle.js");
+    const tmp = mkdtempSync(join(tmpdir(), "bk-int-"));
+    const tarball = join(tmp, "x.tgz");
+    writeFileSync(tarball, "x");
+
+    // No dash at all → idx === -1 → malformed (vs. "md5-asdf" which would
+    // parse as algo="md5", hash="asdf" and hit the unsupported-algo path).
+    await expect(
+      defaultLifecycleEnv.verifyIntegrity(tarball, "abcdef"),
+    ).rejects.toThrow(/Malformed integrity/);
   });
 });
 

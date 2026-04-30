@@ -63,8 +63,11 @@ keepur    0.3.0    yes      —     /Users/mokie/services/hive/keepur
   `.hive/` is missing, report `incomplete`.
 - **RUNNING**: query launchd via `launchctl print
   gui/<uid>/com.hive.<id>.agent`; non-zero exit → `no`.
-- **PORT**: derived from `<instance>/hive.yaml#instance.portBase` or env
-  override; `—` if WS is disabled.
+- **PORT**: read from `<instance>/.env` (`WS_PORT=<n>`, the dodi pattern)
+  with fallback to `<instance>/hive.yaml` (`ws.port`); `—` if neither is
+  set. We deliberately do not compute from `portBase` — the operator's
+  mental model is "what's actually configured," not "what would the
+  default be if I started fresh."
 
 `--json` flag dumps a structured array. No filter flags in v1.
 
