@@ -22,7 +22,7 @@ Tests live beside the source they cover (`src/foo.ts` ↔ `src/foo.test.ts`). No
 Beekeeper ships two binaries:
 
 - **`beekeeperd`** (`dist/index.js`) — the gateway daemon. Owned by launchd; never invoked by hand outside `beekeeper serve` (dev foreground mode).
-- **`beekeeper`** (`dist/cli.js`) — the operator CLI. Subcommands either touch shared state (SQLite registry, config files, frames) or speak HTTP over loopback to the running daemon's admin endpoints. Never starts the daemon.
+- **`beekeeper`** (`dist/cli.js`) — the operator CLI. Subcommands either touch shared state (SQLite registry, config files, frames) or speak HTTP over loopback to the running daemon's admin endpoints. Never starts the daemon. Hive lifecycle commands (`beekeeper hive setup` / `list`) live under `src/hive/` and form the operator's on-ramp for installing the hive engine — see `src/hive/install-bee-claude-md.ts` for the overlay that lands at the cache root for the install-bee Claude Code session.
 
 The daemon is a WebSocket gateway fronting two protocols over a single public port (default 8420). Entry point `src/index.ts` owns the HTTP server (REST API for pairing / device admin / capability registration / admin introspection) and the `WebSocketServer` that handles upgrades.
 
@@ -63,10 +63,15 @@ SQLite via `better-sqlite3` (WAL mode, synchronous). Schema lives in `open()`. J
 
 ## Workflow
 
-- `main` is a **protected branch**. All changes land via PR; no force-pushes, no deletions, linear history only. PRs must pass the `Typecheck + Test + Build` check before merging. `enforce_admins: false`, so emergency direct-push is still possible if something's on fire.
+- `main` is a **protected branch** with `enforce_admins: true` and `required_linear_history: true`. All changes land via PR — no exceptions, even for admins. No force-pushes, no deletions, no merge commits (squash or rebase only). PRs must pass the `Typecheck + Test + Build` check before merging.
 - **CI runs on a self-hosted macOS ARM64 runner** (`.github/workflows/ci.yml`, `runs-on: [self-hosted, macOS, ARM64]`). Don't switch to `ubuntu-latest` or a GitHub-hosted runner without discussion — the runner hosts the same stack the production deploy uses.
-- **Releases are tag-triggered** (`.github/workflows/publish.yml`). Push a `v*.*.*` tag and the workflow verifies `package.json` version matches the tag, runs the full CI pipeline, then publishes `@keepur/beekeeper` to npm. Auth is picked up from the self-hosted runner's ambient `~/.npmrc` (no secret). Flow: `npm version <patch|minor|major>` → PR the version bump → merge → `git push origin --tags`.
-- **Updates** flow through npm: `npm i -g @keepur/beekeeper@latest && beekeeper install && launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeperd`. There is no auto-update LaunchAgent — the previous `scripts/update.sh` + `io.keepur.beekeeperd-updater` setup was retired in favor of operator-paced npm upgrades.
+- **Releases are tag-triggered** (`.github/workflows/publish.yml`). Because `main` is locked down, the `npm version` flow that auto-pushes a tag won't work — pushing the version bump would be rejected. Use this instead:
+  1. `git checkout -b release/vX.Y.Z`
+  2. `npm version --no-git-tag-version <patch|minor|major>` (just bumps `package.json` + `package-lock.json`)
+  3. Stage + commit `package.json` `package-lock.json`, push the branch, open a PR
+  4. After CI green and merge: `git checkout main && git pull --ff-only && git tag vX.Y.Z && git push origin vX.Y.Z`
+  5. The tag push fires the publish workflow; it verifies `package.json` matches the tag, runs full CI, publishes `@keepur/beekeeper` to npm.
+- **Updates** flow through npm: `npm i -g @keepur/beekeeper@latest && beekeeper install`. There is no auto-update LaunchAgent — the previous `scripts/update.sh` + `io.keepur.beekeeperd-updater` setup was retired in favor of operator-paced npm upgrades. `beekeeper install` is one-shot (regenerates wrapper + plist, bootout-then-bootstrap with retry on transient EIO).
 
 ## Before shipping changes
 
