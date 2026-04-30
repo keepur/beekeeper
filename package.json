@@ -1,6 +1,6 @@
 {
   "name": "@keepur/beekeeper",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Claude Code session gateway — real development from your phone",
   "type": "module",
   "license": "Apache-2.0",
