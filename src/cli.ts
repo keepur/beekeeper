@@ -29,6 +29,12 @@ USERS & DEVICES
   user rm <id>               Deactivate a user
   pair <user> [label]        Issue a pairing code for a device
 
+HIVE LIFECYCLE
+  hive setup [--force]       Guided installer — fetches the latest hive
+                              release and opens Claude Code as your
+                              install assistant
+  hive list [--json]         List installed hive instances + run state
+
 INSTANCES
   frame <subcommand>         Manage instance frames (apply / render / etc.)
   init-state <instance>      Detect a Hive instance's init state
@@ -214,6 +220,19 @@ switch (command) {
       initStateExit = 1;
     }
     if (initStateExit) process.exit(initStateExit);
+    break;
+  }
+  case "hive": {
+    let hiveExit = 0;
+    try {
+      const { runHiveCli } = await import("./hive/cli.js");
+      hiveExit = await runHiveCli(process.argv.slice(3));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`beekeeper hive failed: ${msg}`);
+      hiveExit = 1;
+    }
+    if (hiveExit) process.exit(hiveExit);
     break;
   }
   case "pipeline-tick": {
