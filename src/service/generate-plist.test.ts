@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { dirname, join, resolve } from "node:path";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { generatePlist, removeLegacyPlist, seedConfigIfMissing, writeWrapperScript } from "./generate-plist.js";
+import {
+  generatePlist,
+  loadLaunchAgent,
+  removeLegacyPlist,
+  seedConfigIfMissing,
+  writeWrapperScript,
+} from "./generate-plist.js";
 
 describe("generatePlist", () => {
   const baseOptions = {
@@ -189,5 +195,57 @@ describe("removeLegacyPlist", () => {
     removeLegacyPlist(dir);
     expect(existsSync(legacyPath)).toBe(false);
     expect(existsSync(newPath)).toBe(true);
+  });
+});
+
+describe("loadLaunchAgent", () => {
+  it("calls bootout then bootstrap, returns loaded=true on bootstrap success", () => {
+    // The bootout-then-bootstrap pattern is what makes install one-shot:
+    // bootout silently no-ops on first install (service not loaded),
+    // bootstrap loads the plist. On upgrade, bootout unloads the running
+    // daemon and bootstrap re-loads with the fresh plist.
+    const calls: string[][] = [];
+    const runner = (args: string[]) => {
+      calls.push([...args]);
+      // Simulate bootout returning non-zero (service not loaded — first
+      // install case) and bootstrap succeeding.
+      if (args[0] === "bootout") return { status: 36 };
+      if (args[0] === "bootstrap") return { status: 0 };
+      return { status: -1 };
+    };
+
+    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    expect(result.loaded).toBe(true);
+    expect(result.bootstrapStatus).toBe(0);
+    expect(calls).toEqual([
+      ["bootout", "gui/501/io.keepur.beekeeperd"],
+      ["bootstrap", "gui/501", "/path/to/plist"],
+    ]);
+  });
+
+  it("returns loaded=false with the bootstrap status when bootstrap fails", () => {
+    const runner = (args: string[]) => {
+      if (args[0] === "bootout") return { status: 0 };
+      if (args[0] === "bootstrap") return { status: 5 };
+      return { status: -1 };
+    };
+
+    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    expect(result.loaded).toBe(false);
+    expect(result.bootstrapStatus).toBe(5);
+  });
+
+  it("issues bootout BEFORE bootstrap (matters for upgrade-in-place)", () => {
+    // If bootstrap ran first against an already-loaded service, it would
+    // fail with "service already loaded" and we'd never get the new plist
+    // picked up. Bootout-first guarantees the service is gone before we
+    // try to load the new definition.
+    const order: string[] = [];
+    const runner = (args: string[]) => {
+      order.push(args[0]);
+      return { status: 0 };
+    };
+    loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    expect(order).toEqual(["bootout", "bootstrap"]);
   });
 });

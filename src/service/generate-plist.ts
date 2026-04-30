@@ -265,6 +265,45 @@ export function removeLegacyPlist(
   }
 }
 
+/**
+ * The runner contract that `loadLaunchAgent` calls into. Real callers pass
+ * `defaultRunner` (which delegates to `child_process.spawnSync`); tests pass
+ * a mock that records the args and returns a controlled status.
+ */
+export type LaunchctlRunner = (args: string[]) => { status: number | null };
+
+const defaultRunner: LaunchctlRunner = (args) => {
+  const r = spawnSync("launchctl", args, { stdio: "ignore" });
+  return { status: r.status };
+};
+
+/**
+ * Bootout-then-bootstrap a LaunchAgent so `beekeeper install` is genuinely
+ * one-shot — no manual `launchctl load` follow-up. The bootout is silent
+ * (it returns non-zero when the service isn't loaded, which is fine), so
+ * this works for both first install and upgrade-in-place. Bootstrap is the
+ * modern launchctl primitive that replaced `launchctl load`.
+ *
+ * Returns a structured outcome so install() can print the right line and
+ * tests can assert behavior without parsing console output. If bootstrap
+ * fails (e.g., the operator isn't in a gui session, or some other launchd
+ * weirdness), we don't throw — install proceeds and prints the manual
+ * fallback so the operator can finish the load themselves.
+ */
+export function loadLaunchAgent(
+  uid: number,
+  label: string,
+  plistPath: string,
+  runner: LaunchctlRunner = defaultRunner,
+): { loaded: boolean; bootstrapStatus: number | null } {
+  // bootout first — silent if not loaded. Lets us re-run install() to
+  // pick up plist edits without needing the operator to know whether
+  // they're upgrading or installing fresh.
+  runner(["bootout", `gui/${uid}/${label}`]);
+  const bootstrap = runner(["bootstrap", `gui/${uid}`, plistPath]);
+  return { loaded: bootstrap.status === 0, bootstrapStatus: bootstrap.status };
+}
+
 export function install(configDir?: string): void {
   const nodePath = process.execPath;
   const indexPath = resolveIndexPath();
@@ -319,8 +358,27 @@ export function install(configDir?: string): void {
     console.log(`  - create ${envFile} with BEEKEEPER_JWT_SECRET / BEEKEEPER_ADMIN_SECRET and re-run install`);
     console.log(`  - or manually edit the plist's EnvironmentVariables`);
   }
-  console.log(`Start with: launchctl load ${plistPath}`);
-  console.log(`Stop with:  launchctl unload ${plistPath}`);
+  // Auto-load (or reload) the LaunchAgent so install is one-shot. The
+  // user's UID is what gui/<uid>/<label> resolves against; we read it
+  // from process.getuid() rather than $UID so the behavior matches whoever
+  // ran the command, not whatever shell var happens to be exported.
+  const uid = process.getuid?.() ?? -1;
+  if (uid >= 0) {
+    const result = loadLaunchAgent(uid, LABEL, plistPath);
+    if (result.loaded) {
+      console.log(`LaunchAgent loaded — daemon running on the configured port.`);
+      console.log(`Restart with: launchctl kickstart -k gui/${uid}/${LABEL}`);
+      console.log(`Stop with:    launchctl bootout gui/${uid}/${LABEL}`);
+    } else {
+      log.warn("launchctl bootstrap returned non-zero", { status: result.bootstrapStatus });
+      console.log(
+        `Note: launchctl bootstrap returned ${result.bootstrapStatus}. Load it manually with: launchctl bootstrap gui/${uid} ${plistPath}`,
+      );
+      console.log(`Stop with: launchctl bootout gui/${uid}/${LABEL}`);
+    }
+  } else {
+    console.log(`Could not resolve uid; load manually with: launchctl bootstrap gui/$UID ${plistPath}`);
+  }
 
   try {
     const reports = installAllSkillSymlinks();

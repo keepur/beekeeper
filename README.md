@@ -261,11 +261,10 @@ log stream --predicate 'process == "beekeeper"' --level debug
 
 ```bash
 npm install -g @keepur/beekeeper@latest
-beekeeper install                                        # regenerates wrapper + plist
-launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeperd
+beekeeper install
 ```
 
-`beekeeper install` is idempotent — it always regenerates the wrapper at `~/.beekeeper/bin/start.sh` and the plist from scratch, so it's safe to re-run on every update. `launchctl kickstart -k` restarts the service in place without unloading the plist.
+`beekeeper install` is idempotent and one-shot — it regenerates the wrapper at `~/.beekeeper/bin/start.sh`, regenerates the plist, and bootout-then-bootstrap the LaunchAgent so the new daemon is running before the command returns. No follow-up `launchctl` step needed.
 
 If you're running from a source checkout, replace step 1 with `git pull --ff-only && npm ci && npm run build`.
 
