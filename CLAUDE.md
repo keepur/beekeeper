@@ -66,7 +66,7 @@ SQLite via `better-sqlite3` (WAL mode, synchronous). Schema lives in `open()`. J
 - `main` is a **protected branch**. All changes land via PR; no force-pushes, no deletions, linear history only. PRs must pass the `Typecheck + Test + Build` check before merging. `enforce_admins: false`, so emergency direct-push is still possible if something's on fire.
 - **CI runs on a self-hosted macOS ARM64 runner** (`.github/workflows/ci.yml`, `runs-on: [self-hosted, macOS, ARM64]`). Don't switch to `ubuntu-latest` or a GitHub-hosted runner without discussion — the runner hosts the same stack the production deploy uses.
 - **Releases are tag-triggered** (`.github/workflows/publish.yml`). Push a `v*.*.*` tag and the workflow verifies `package.json` version matches the tag, runs the full CI pipeline, then publishes `@keepur/beekeeper` to npm. Auth is picked up from the self-hosted runner's ambient `~/.npmrc` (no secret). Flow: `npm version <patch|minor|major>` → PR the version bump → merge → `git push origin --tags`.
-- **`scripts/update.sh`** is the idempotent auto-update helper for source deployments (clone → build → install → kickstart). It's what the updater LaunchAgent runs on an interval, but you can call it manually. It exits 0 cleanly when already at HEAD, so it's cheap to run unconditionally.
+- **Updates** flow through npm: `npm i -g @keepur/beekeeper@latest && beekeeper install && launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeperd`. There is no auto-update LaunchAgent — the previous `scripts/update.sh` + `io.keepur.beekeeperd-updater` setup was retired in favor of operator-paced npm upgrades.
 
 ## Before shipping changes
 

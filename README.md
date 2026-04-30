@@ -16,10 +16,10 @@ The package ships two binaries:
 
 ## Quick Start
 
-Beekeeper is distributed two ways, depending on whether you want auto-updates via `scripts/update.sh`:
+Beekeeper is distributed two ways:
 
-- **npm** (simpler, good for casual use) — `npm install -g @keepur/beekeeper`. You get a `beekeeper` binary on your `$PATH`. Upgrades are `npm install -g @keepur/beekeeper@latest`.
-- **From source** (recommended if you plan to run as a long-lived service) — `git clone && npm ci && npm run build`. This is what the `scripts/update.sh` auto-updater in the [Updating](#updating) section expects, since it runs `git pull` + rebuild in-place.
+- **npm** (recommended) — `npm install -g @keepur/beekeeper`. You get the `beekeeper` (operator CLI) and `beekeeperd` (daemon) binaries on your `$PATH`. Upgrades are `npm install -g @keepur/beekeeper@latest`.
+- **From source** (developers) — `git clone && npm ci && npm run build`. Useful if you're contributing or want to run an unreleased revision.
 
 Both install paths require Node **22 or newer** (`engines.node` in `package.json`).
 
@@ -259,91 +259,15 @@ log stream --predicate 'process == "beekeeper"' --level debug
 
 ## Updating
 
-### Manual update
-
-From your source checkout:
-
 ```bash
-git pull --ff-only
-npm ci
-npm run build
-beekeeper install ~/.beekeeper        # regenerates wrapper + plist
+npm install -g @keepur/beekeeper@latest
+beekeeper install                                        # regenerates wrapper + plist
 launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeperd
 ```
 
-`beekeeper install` is idempotent — it always regenerates `bin/start.sh` and the plist from scratch, so it's safe to re-run on every update. `launchctl kickstart -k` restarts the service in place without unloading the plist.
+`beekeeper install` is idempotent — it always regenerates the wrapper at `~/.beekeeper/bin/start.sh` and the plist from scratch, so it's safe to re-run on every update. `launchctl kickstart -k` restarts the service in place without unloading the plist.
 
-### Automated update
-
-The repo ships a `scripts/update.sh` helper that wraps all of the above. It's **idempotent** — if there are no new commits upstream it exits `0` without rebuilding, so it's cheap to run on a schedule.
-
-```bash
-scripts/update.sh                    # defaults to ~/.beekeeper
-scripts/update.sh /path/to/config    # or pass a config dir
-```
-
-Environment overrides:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `BEEKEEPER_LABEL` | `io.keepur.beekeeperd` | LaunchAgent label to restart |
-| `BEEKEEPER_UPDATE_BRANCH` | `main` | Required current branch (safety guard) |
-
-By default the script refuses to run unless you're on `main`, so a local branch you forgot to switch off of won't get silently clobbered.
-
-### Scheduling auto-updates
-
-You can wire `scripts/update.sh` into any scheduler. The two obvious choices on macOS:
-
-**Option 1 — cron** (simple, but cron runs outside the user's `launchd` session so `launchctl kickstart gui/$UID/...` may not have permission to touch a GUI-session LaunchAgent; prefer Option 2 on modern macOS):
-
-```cron
-# crontab -e  — check for updates every 15 minutes
-*/15 * * * * /Users/you/beekeeper/scripts/update.sh >> /Users/you/.beekeeper/logs/update.log 2>&1
-```
-
-**Option 2 — a second LaunchAgent** (recommended on macOS — runs inside your user `gui/` session so `launchctl kickstart` works, and survives reboots):
-
-Create `~/Library/LaunchAgents/io.keepur.beekeeperd-updater.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>io.keepur.beekeeperd-updater</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/beekeeper/scripts/update.sh</string>
-  </array>
-  <key>StartInterval</key>
-  <integer>900</integer>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/Users/you/.beekeeper/logs/update.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/you/.beekeeper/logs/update.err</string>
-</dict>
-</plist>
-```
-
-Then load it:
-
-```bash
-launchctl load ~/Library/LaunchAgents/io.keepur.beekeeperd-updater.plist
-```
-
-`StartInterval` is in seconds — `900` = 15 minutes. Use `StartCalendarInterval` instead if you want fixed-time updates (e.g. daily at 04:00) rather than a rolling interval.
-
-**Tail the update log** to see what the scheduler is doing:
-
-```bash
-tail -f ~/.beekeeper/logs/update.log
-```
-
-On a no-op tick you'll see `[beekeeper-update] already up to date`. On an actual update you'll see the full pull → build → install → kickstart sequence.
+If you're running from a source checkout, replace step 1 with `git pull --ff-only && npm ci && npm run build`.
 
 ## Pairing a Device
 
