@@ -199,6 +199,10 @@ describe("removeLegacyPlist", () => {
 });
 
 describe("loadLaunchAgent", () => {
+  // No-op sleeper for tests — keeps the suite fast even on the failure
+  // path where production would sleep 250ms × 2 between retries.
+  const noopSleeper = () => {};
+
   it("calls bootout then bootstrap, returns loaded=true on bootstrap success", () => {
     // The bootout-then-bootstrap pattern is what makes install one-shot:
     // bootout silently no-ops on first install (service not loaded),
@@ -214,25 +218,31 @@ describe("loadLaunchAgent", () => {
       return { status: -1 };
     };
 
-    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner, noopSleeper);
     expect(result.loaded).toBe(true);
     expect(result.bootstrapStatus).toBe(0);
+    expect(result.attempts).toBe(1);
     expect(calls).toEqual([
       ["bootout", "gui/501/io.keepur.beekeeperd"],
       ["bootstrap", "gui/501", "/path/to/plist"],
     ]);
   });
 
-  it("returns loaded=false with the bootstrap status when bootstrap fails", () => {
+  it("returns loaded=false with the bootstrap status when all 3 attempts fail", () => {
+    const calls: string[][] = [];
     const runner = (args: string[]) => {
+      calls.push([...args]);
       if (args[0] === "bootout") return { status: 0 };
       if (args[0] === "bootstrap") return { status: 5 };
       return { status: -1 };
     };
 
-    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner, noopSleeper);
     expect(result.loaded).toBe(false);
     expect(result.bootstrapStatus).toBe(5);
+    expect(result.attempts).toBe(3);
+    // 1 bootout + 3 bootstrap attempts = 4 total runner calls.
+    expect(calls).toHaveLength(4);
   });
 
   it("issues bootout BEFORE bootstrap (matters for upgrade-in-place)", () => {
@@ -245,7 +255,54 @@ describe("loadLaunchAgent", () => {
       order.push(args[0]);
       return { status: 0 };
     };
-    loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner);
+    loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner, noopSleeper);
     expect(order).toEqual(["bootout", "bootstrap"]);
+  });
+
+  it("retries bootstrap on transient failure and succeeds on a later attempt", () => {
+    // Real machines occasionally see bootstrap return 5 right after a
+    // bootout — the unload is async and bootstrap can race with the
+    // teardown. The retry smooths over the transient. Without retry,
+    // `beekeeper install` would print the manual-fallback path even
+    // though one extra try would have worked.
+    let bootstrapCallCount = 0;
+    const runner = (args: string[]) => {
+      if (args[0] === "bootout") return { status: 0 };
+      if (args[0] === "bootstrap") {
+        bootstrapCallCount += 1;
+        // First attempt fails with the canonical EIO; second attempt wins.
+        return { status: bootstrapCallCount === 1 ? 5 : 0 };
+      }
+      return { status: -1 };
+    };
+
+    const result = loadLaunchAgent(501, "io.keepur.beekeeperd", "/path/to/plist", runner, noopSleeper);
+    expect(result.loaded).toBe(true);
+    expect(result.attempts).toBe(2);
+  });
+
+  it("sleeps between bootstrap attempts (only — not after a successful attempt)", () => {
+    // Sanity-check: we don't waste a sleep after the final attempt or
+    // after a success. Three failures should sleep twice; a first-try
+    // win should sleep zero times.
+    const sleeps: number[] = [];
+    const sleeper = (ms: number) => {
+      sleeps.push(ms);
+    };
+
+    const failingRunner = (args: string[]) => {
+      if (args[0] === "bootout") return { status: 0 };
+      return { status: 5 };
+    };
+    loadLaunchAgent(501, "io.keepur.beekeeperd", "/p", failingRunner, sleeper);
+    expect(sleeps).toHaveLength(2); // 3 attempts → 2 inter-attempt sleeps
+
+    sleeps.length = 0;
+    const winningRunner = (args: string[]) => {
+      if (args[0] === "bootout") return { status: 0 };
+      return { status: 0 };
+    };
+    loadLaunchAgent(501, "io.keepur.beekeeperd", "/p", winningRunner, sleeper);
+    expect(sleeps).toHaveLength(0);
   });
 });
