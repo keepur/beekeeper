@@ -7,7 +7,21 @@ Claude Code session gateway — real development from your phone (or any device)
 The package ships two binaries:
 
 - **`beekeeperd`** — the gateway daemon. launchd runs this; you don't normally invoke it by hand. For dev convenience, `beekeeper serve` runs it in the foreground.
-- **`beekeeper`** — the operator CLI. Use it to install / pair devices / manage users / introspect the running daemon. It never starts the daemon. Run `beekeeper help` for the full command list.
+- **`beekeeper`** — the operator CLI. Use it to install / pair devices / manage users / introspect the running daemon, and to bootstrap the hive engine. It never starts the daemon. Run `beekeeper help` for the full command list.
+
+## Setting up hive
+
+If you also want to run the [hive](https://www.npmjs.com/package/@keepur/hive) engine on this Mac, beekeeper has a guided installer:
+
+```bash
+beekeeper hive setup
+```
+
+This fetches the latest hive release, extracts it to `~/.beekeeper/hive-cache/<version>/`, and opens a Claude Code session there with an install-bee guide that walks you through `hive init`, Slack pairing, and your first conversation. Re-running detects the now-existing instance and points you at `beekeeper hive list` for ongoing visibility.
+
+```bash
+beekeeper hive list                # show installed instances + run state
+```
 
 ## Prerequisites
 
