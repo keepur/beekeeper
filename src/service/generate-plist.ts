@@ -103,9 +103,22 @@ function xmlEscape(s: string): string {
  * built index.js. Returns the absolute path to the wrapper. Idempotent —
  * overwrites on each install so a rebuild can't leave a stale wrapper
  * pointing at an old path.
+ *
+ * Wrapper lives under `<workDir>/bin/start.sh` (the user's beekeeper config
+ * directory, e.g. `~/.beekeeper/bin/start.sh`). Earlier versions wrote it
+ * inside the package directory at `<repoRoot>/bin/start.sh`, which broke
+ * for `npm i -g` users — the package directory is root-owned after a sudo
+ * install and `beekeeper install` runs as the user. The config dir is
+ * always user-owned, so writing there works for both source and npm
+ * installs.
  */
-function writeWrapperScript(envFile: string, nodePath: string, indexPath: string): string {
-  const wrapperDir = join(resolveRepoRoot(), "bin");
+export function writeWrapperScript(
+  envFile: string,
+  nodePath: string,
+  indexPath: string,
+  workDir: string,
+): string {
+  const wrapperDir = join(workDir, "bin");
   const wrapperPath = join(wrapperDir, "start.sh");
   mkdirSync(wrapperDir, { recursive: true });
 
@@ -206,7 +219,7 @@ ${envVarsXml}  <key>RunAtLoad</key>
 
 /**
  * Install the LaunchAgent plist. If `${configDir}/env` exists, install
- * generates a wrapper script at `<repoRoot>/bin/start.sh` that sources the
+ * generates a wrapper script at `${configDir}/bin/start.sh` that sources the
  * env file, and points the plist at that wrapper. Otherwise, the plist runs
  * node directly (legacy mode — requires secrets to be in launchd's env).
  */
@@ -272,7 +285,7 @@ export function install(configDir?: string): void {
   const useWrapper = existsSync(envFile);
   let wrapperPath: string | undefined;
   if (useWrapper) {
-    wrapperPath = writeWrapperScript(envFile, nodePath, indexPath);
+    wrapperPath = writeWrapperScript(envFile, nodePath, indexPath, workDir);
     log.info("Wrapper script written", { path: wrapperPath, envFile });
   }
 
