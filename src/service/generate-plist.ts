@@ -272,10 +272,24 @@ export function removeLegacyPlist(
  */
 export type LaunchctlRunner = (args: string[]) => { status: number | null };
 
+/** Synchronous sleep — injectable so tests don't pay the wall clock. */
+export type Sleeper = (ms: number) => void;
+
 const defaultRunner: LaunchctlRunner = (args) => {
   const r = spawnSync("launchctl", args, { stdio: "ignore" });
   return { status: r.status };
 };
+
+const defaultSleeper: Sleeper = (ms) => {
+  // Atomics.wait blocks the current thread without busy-waiting and without
+  // reaching for child_process. The buffer is private to this call so no
+  // cross-thread coordination concerns apply.
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+};
+
+const BOOTSTRAP_MAX_ATTEMPTS = 3;
+const BOOTSTRAP_RETRY_MS = 250;
 
 /**
  * Bootout-then-bootstrap a LaunchAgent so `beekeeper install` is genuinely
@@ -284,10 +298,16 @@ const defaultRunner: LaunchctlRunner = (args) => {
  * this works for both first install and upgrade-in-place. Bootstrap is the
  * modern launchctl primitive that replaced `launchctl load`.
  *
- * Returns a structured outcome so install() can print the right line and
- * tests can assert behavior without parsing console output. If bootstrap
- * fails (e.g., the operator isn't in a gui session, or some other launchd
- * weirdness), we don't throw — install proceeds and prints the manual
+ * Bootstrap is retried up to 3 attempts with a 250ms gap between. Real
+ * machines occasionally see bootstrap exit 5 ("input/output error") right
+ * after a bootout — the unload is async, and bootstrap can race with the
+ * teardown even when the service is fully gone by the next try. Retrying
+ * smooths over the transient without papering over a real failure: three
+ * consecutive 5s is an actual problem.
+ *
+ * Returns a structured outcome (including attempt count) so install() can
+ * print the right line and tests can assert retry behavior. If bootstrap
+ * still fails after retries, we don't throw — install prints a manual
  * fallback so the operator can finish the load themselves.
  */
 export function loadLaunchAgent(
@@ -295,13 +315,23 @@ export function loadLaunchAgent(
   label: string,
   plistPath: string,
   runner: LaunchctlRunner = defaultRunner,
-): { loaded: boolean; bootstrapStatus: number | null } {
+  sleeper: Sleeper = defaultSleeper,
+): { loaded: boolean; bootstrapStatus: number | null; attempts: number } {
   // bootout first — silent if not loaded. Lets us re-run install() to
   // pick up plist edits without needing the operator to know whether
   // they're upgrading or installing fresh.
   runner(["bootout", `gui/${uid}/${label}`]);
-  const bootstrap = runner(["bootstrap", `gui/${uid}`, plistPath]);
-  return { loaded: bootstrap.status === 0, bootstrapStatus: bootstrap.status };
+
+  let lastStatus: number | null = null;
+  for (let attempt = 1; attempt <= BOOTSTRAP_MAX_ATTEMPTS; attempt++) {
+    const r = runner(["bootstrap", `gui/${uid}`, plistPath]);
+    lastStatus = r.status;
+    if (r.status === 0) {
+      return { loaded: true, bootstrapStatus: 0, attempts: attempt };
+    }
+    if (attempt < BOOTSTRAP_MAX_ATTEMPTS) sleeper(BOOTSTRAP_RETRY_MS);
+  }
+  return { loaded: false, bootstrapStatus: lastStatus, attempts: BOOTSTRAP_MAX_ATTEMPTS };
 }
 
 export function install(configDir?: string): void {
@@ -366,13 +396,17 @@ export function install(configDir?: string): void {
   if (uid >= 0) {
     const result = loadLaunchAgent(uid, LABEL, plistPath);
     if (result.loaded) {
-      console.log(`LaunchAgent loaded — daemon running on the configured port.`);
+      const note = result.attempts > 1 ? ` (after ${result.attempts} bootstrap attempts)` : "";
+      console.log(`LaunchAgent loaded — daemon running on the configured port${note}.`);
       console.log(`Restart with: launchctl kickstart -k gui/${uid}/${LABEL}`);
       console.log(`Stop with:    launchctl bootout gui/${uid}/${LABEL}`);
     } else {
-      log.warn("launchctl bootstrap returned non-zero", { status: result.bootstrapStatus });
+      log.warn("launchctl bootstrap exhausted retries", {
+        status: result.bootstrapStatus,
+        attempts: result.attempts,
+      });
       console.log(
-        `Note: launchctl bootstrap returned ${result.bootstrapStatus}. Load it manually with: launchctl bootstrap gui/${uid} ${plistPath}`,
+        `Note: launchctl bootstrap returned ${result.bootstrapStatus} after ${result.attempts} attempts. Load it manually with: launchctl bootstrap gui/${uid} ${plistPath}`,
       );
       console.log(`Stop with: launchctl bootout gui/${uid}/${LABEL}`);
     }
