@@ -16,13 +16,24 @@ describe("renderInstallBeeClaudeMd", () => {
     expect(md).toMatch(/Verify dependencies/);
     expect(md).toMatch(/Install the hive CLI/);
     expect(md).toMatch(/Run `hive init`/);
-    expect(md).toMatch(/Pair Slack/);
+    expect(md).toMatch(/Slack/);
+    expect(md).toMatch(/hive doctor/);
   });
 
   it("includes a posture section that warns against destructive actions", () => {
     // The operator's machine is unknown territory; we don't want Claude
     // running sudo or wiping configs without asking.
     const md = renderInstallBeeClaudeMd({ hiveVersion: "0.3.2" });
-    expect(md).toMatch(/never sudo without permission|Confirm before destructive/);
+    expect(md).toMatch(/never sudo|sudo without|Confirm before|Conservative by default/);
+  });
+
+  it("points at the in-tree package/ as the source of truth", () => {
+    // The whole purpose of extracting the tarball is to give Claude the
+    // real engine code in scope. If a future edit removes the
+    // ./package/ pointer, Claude loses its anchor for ground-truth
+    // verification.
+    const md = renderInstallBeeClaudeMd({ hiveVersion: "0.3.6" });
+    expect(md).toMatch(/\.\/package\//);
+    expect(md).toMatch(/ground truth|verify before|Verify before/i);
   });
 });
