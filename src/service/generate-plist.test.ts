@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { dirname, join, resolve } from "node:path";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { generatePlist, removeLegacyPlist, seedConfigIfMissing } from "./generate-plist.js";
+import { generatePlist, removeLegacyPlist, seedConfigIfMissing, writeWrapperScript } from "./generate-plist.js";
 
 describe("generatePlist", () => {
   const baseOptions = {
@@ -105,33 +105,50 @@ describe("seedConfigIfMissing", () => {
   });
 });
 
-describe("wrapper-script resolution", () => {
-  // This test pins the resolveRepoRoot logic: the wrapper script lives under
-  // the same repo root as dist/index.js. If someone changes the `..` count
-  // in either helper, this asserts that bin/ stays next to dist/ — which is
-  // the invariant `beekeeper install` relies on to avoid writing the wrapper
-  // to a parent directory the user doesn't own.
-  //
-  // We can't easily import the private helpers, so we replicate the path
-  // arithmetic at test time against the known on-disk layout.
-  it("bin/start.sh lives under the same root as dist/index.js", async () => {
-    // At test time this file runs as dist/service/generate-plist.test.js
-    // after build, or src/service/generate-plist.test.ts under vitest.
-    // Vitest uses the source path, so we compute relative to __dirname /
-    // import.meta at test time.
-    const testDir = dirname(new URL(import.meta.url).pathname);
-    // testDir ends in src/service — walk up to the repo root.
-    const repoRoot = resolve(testDir, "..", "..");
-    // Sanity: repoRoot should contain src/ and bin/ (once install has run
-    // at least once locally). We only assert that the computed paths are
-    // siblings — not that bin/ exists yet.
-    const binDir = resolve(repoRoot, "bin");
-    const srcDir = resolve(repoRoot, "src");
-    expect(dirname(binDir)).toBe(repoRoot);
-    expect(dirname(srcDir)).toBe(repoRoot);
-    // This is the load-bearing invariant: bin/ is a child of the same
-    // repo root that contains src/ (and after build, dist/).
-    expect(dirname(binDir)).toBe(dirname(srcDir));
+
+describe("writeWrapperScript", () => {
+  it("writes the wrapper under workDir/bin/start.sh, not the package dir", () => {
+    // Regression test for a bug shipped in 1.2.0: writeWrapperScript wrote
+    // the wrapper to <repoRoot>/bin/start.sh, which is /opt/homebrew/lib/
+    // node_modules/@keepur/beekeeper/bin for `npm i -g` users — root-owned
+    // and unwritable when `beekeeper install` runs as the user. The fix
+    // routes the wrapper into the user's config dir, which is always
+    // user-owned regardless of how the package was installed.
+    const workDir = mkdtempSync(join(tmpdir(), "bk-wrap-"));
+    const envFile = join(workDir, "env");
+    writeFileSync(envFile, "BEEKEEPER_JWT_SECRET=stub\n");
+
+    const wrapperPath = writeWrapperScript(
+      envFile,
+      "/opt/homebrew/bin/node",
+      "/some/dist/index.js",
+      workDir,
+    );
+
+    expect(wrapperPath).toBe(join(workDir, "bin", "start.sh"));
+    expect(existsSync(wrapperPath)).toBe(true);
+    const content = readFileSync(wrapperPath, "utf8");
+    // Wrapper sources the env file by absolute path…
+    expect(content).toContain(envFile);
+    // …and execs node + indexPath.
+    expect(content).toContain("/opt/homebrew/bin/node");
+    expect(content).toContain("/some/dist/index.js");
+    // The PATH default that protects against launchd's minimal gui/ PATH
+    // must come BEFORE the env-file source so a user-supplied PATH can win.
+    const pathIdx = content.indexOf("export PATH=");
+    const sourceIdx = content.indexOf(". \"${ENV_FILE}\"");
+    expect(pathIdx).toBeGreaterThan(0);
+    expect(sourceIdx).toBeGreaterThan(pathIdx);
+  });
+
+  it("creates the bin/ directory if it doesn't exist", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "bk-wrap-"));
+    const envFile = join(workDir, "env");
+    writeFileSync(envFile, "stub\n");
+
+    expect(existsSync(join(workDir, "bin"))).toBe(false);
+    writeWrapperScript(envFile, "/x/node", "/x/index.js", workDir);
+    expect(existsSync(join(workDir, "bin"))).toBe(true);
   });
 });
 
