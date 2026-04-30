@@ -4,6 +4,11 @@ Claude Code session gateway — real development from your phone (or any device)
 
 **Beekeeper** is a WebSocket-based server that wraps the Claude Code Agent SDK, letting you run full-featured development sessions on remote devices. Write code, run commands, approve tool use — all from an iOS app, web client, or any WebSocket-capable device.
 
+The package ships two binaries:
+
+- **`beekeeperd`** — the gateway daemon. launchd runs this; you don't normally invoke it by hand. For dev convenience, `beekeeper serve` runs it in the foreground.
+- **`beekeeper`** — the operator CLI. Use it to install / pair devices / manage users / introspect the running daemon. It never starts the daemon. Run `beekeeper help` for the full command list.
+
 ## Prerequisites
 
 - **Node 22 or newer** — enforced by `engines.node` in `package.json`.
@@ -231,7 +236,7 @@ To run Beekeeper as a background service on macOS:
 beekeeper install ~/.beekeeper
 ```
 
-This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeper.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`).
+This generates and installs a LaunchAgent plist at `~/Library/LaunchAgents/io.keepur.beekeeperd.plist`. The service auto-starts on login (`RunAtLoad`+`KeepAlive`). Pre-1.2 installs used the label `io.keepur.beekeeper` (no trailing "d"); install/uninstall both clean up that legacy plist if present so an upgrader doesn't end up with two LaunchAgents fighting for :8420.
 
 On a fresh machine, `beekeeper install` also seeds `<configDir>/beekeeper.yaml` from the bundled example if no config exists yet — so you don't have to find the example file inside the npm package. It never overwrites an existing config, so re-running install is still safe.
 
@@ -263,7 +268,7 @@ git pull --ff-only
 npm ci
 npm run build
 beekeeper install ~/.beekeeper        # regenerates wrapper + plist
-launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeper
+launchctl kickstart -k gui/$(id -u)/io.keepur.beekeeperd
 ```
 
 `beekeeper install` is idempotent — it always regenerates `bin/start.sh` and the plist from scratch, so it's safe to re-run on every update. `launchctl kickstart -k` restarts the service in place without unloading the plist.
@@ -281,7 +286,7 @@ Environment overrides:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BEEKEEPER_LABEL` | `io.keepur.beekeeper` | LaunchAgent label to restart |
+| `BEEKEEPER_LABEL` | `io.keepur.beekeeperd` | LaunchAgent label to restart |
 | `BEEKEEPER_UPDATE_BRANCH` | `main` | Required current branch (safety guard) |
 
 By default the script refuses to run unless you're on `main`, so a local branch you forgot to switch off of won't get silently clobbered.
@@ -299,7 +304,7 @@ You can wire `scripts/update.sh` into any scheduler. The two obvious choices on 
 
 **Option 2 — a second LaunchAgent** (recommended on macOS — runs inside your user `gui/` session so `launchctl kickstart` works, and survives reboots):
 
-Create `~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist`:
+Create `~/Library/LaunchAgents/io.keepur.beekeeperd-updater.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -307,7 +312,7 @@ Create `~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist`:
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>io.keepur.beekeeper-updater</string>
+  <string>io.keepur.beekeeperd-updater</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/you/beekeeper/scripts/update.sh</string>
@@ -327,7 +332,7 @@ Create `~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist`:
 Then load it:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/io.keepur.beekeeper-updater.plist
+launchctl load ~/Library/LaunchAgents/io.keepur.beekeeperd-updater.plist
 ```
 
 `StartInterval` is in seconds — `900` = 15 minutes. Use `StartCalendarInterval` instead if you want fixed-time updates (e.g. daily at 04:00) rather than a rolling interval.

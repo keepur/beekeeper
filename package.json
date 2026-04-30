@@ -5,7 +5,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "beekeeper": "dist/cli.js"
+    "beekeeper": "dist/cli.js",
+    "beekeeperd": "dist/index.js"
   },
   "files": [
     "dist/",

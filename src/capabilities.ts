@@ -76,6 +76,15 @@ export class CapabilityManifest {
   }
 
   /**
+   * Return full capability entries for admin/operator introspection. Sorted
+   * by name. Unlike `list()`, this does NOT include the implicit `beekeeper`
+   * entry — operators querying this know beekeeper is the host.
+   */
+  listAdmin(): CapabilityEntry[] {
+    return Array.from(this.entries.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
    * Lookup a registered capability by name. `beekeeper` is not stored in the
    * manifest so this returns undefined for it — the WS proxy handles that case
    * separately.

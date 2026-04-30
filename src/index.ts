@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import "dotenv/config";
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -19,6 +20,7 @@ import type { ClientMessage, ServerMessage } from "./types.js";
 import { handleImage, handleFile } from "./file-handler.js";
 import { PipelineOrchestrator } from "./pipeline/orchestrator/index.js";
 import { handlePipelineAdminRequest } from "./pipeline/orchestrator/http.js";
+import { handleAdminRequest } from "./admin-handler.js";
 import { runStartupRecovery } from "./pipeline/orchestrator/recovery.js";
 import { LinearClient as PipelineLinearClient } from "./pipeline/linear-client.js";
 import { resolveBeekeeperSecret } from "./pipeline/honeypot-reader.js";
@@ -313,6 +315,13 @@ async function main(): Promise<void> {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Internal server error" }));
       }
+      return;
+    }
+
+    // /admin/* — operator introspection endpoints. Loopback-only AND
+    // admin-secret-gated. Live in `admin-handler.ts` so they're testable
+    // without spinning up the WS server / SQLite / SDK stack.
+    if (handleAdminRequest(req, res, { sessionManager, capabilities, adminSecret: config.adminSecret })) {
       return;
     }
 

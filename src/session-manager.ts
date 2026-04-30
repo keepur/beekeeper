@@ -369,6 +369,29 @@ export class SessionManager {
   }
 
   /**
+   * Full session view for admin/operator introspection. Includes timing
+   * fields the client-facing `getActiveSessions` omits. Sorted by sessionId
+   * for stable output.
+   */
+  getAdminSessions(): Array<{
+    sessionId: string;
+    path: string;
+    state: "idle" | "busy";
+    queryStartedAt: number | null;
+    lastActivityAt: number;
+  }> {
+    return Array.from(this.sessions.values())
+      .map((s) => ({
+        sessionId: s.sessionId,
+        path: s.cwd,
+        state: s.state,
+        queryStartedAt: s.queryStartedAt,
+        lastActivityAt: s.lastActivityAt,
+      }))
+      .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  }
+
+  /**
    * Resume a past session by ID. Lazy — no SDK call until user sends a message.
    * If the session is already active, returns the existing session info.
    */

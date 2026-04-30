@@ -8,9 +8,15 @@ import { installAllSkillSymlinks, removeAllSkillSymlinks } from "./skill-install
 const log = createLogger("beekeeper-service");
 
 // Reverse-DNS label for the LaunchAgent. The real domain is keepur.io, so
-// the reverse is io.keepur.beekeeper — NOT com.keepur.beekeeper (we do not
-// own keepur.com).
-const LABEL = "io.keepur.beekeeper";
+// the reverse is io.keepur.beekeeperd — NOT com.keepur.beekeeperd (we do not
+// own keepur.com). The trailing "d" mirrors the daemon binary name and
+// distinguishes the daemon from the operator CLI (`beekeeper`).
+const LABEL = "io.keepur.beekeeperd";
+
+// Pre-1.2 installs used `io.keepur.beekeeper` (without the trailing "d").
+// install/uninstall both clean up that legacy label so an upgrader doesn't
+// end up with two LaunchAgents fighting for :8420.
+const LEGACY_LABEL = "io.keepur.beekeeper";
 
 /**
  * Resolve where the built index.js lives for this install.
@@ -204,12 +210,58 @@ ${envVarsXml}  <key>RunAtLoad</key>
  * env file, and points the plist at that wrapper. Otherwise, the plist runs
  * node directly (legacy mode — requires secrets to be in launchd's env).
  */
+/**
+ * Unload + delete the legacy `io.keepur.beekeeper.plist` if present. Pre-1.2
+ * installs used that label; from 1.2 onward we use `io.keepur.beekeeperd`.
+ * Run this BEFORE writing the new plist so we never leave two LaunchAgents
+ * fighting for :8420. Idempotent and silent when the legacy plist doesn't
+ * exist.
+ *
+ * Exported and parameterized for tests — production callers can pass nothing
+ * and get the real `~/Library/LaunchAgents` path.
+ */
+export function removeLegacyPlist(
+  plistDir: string = join(homedir(), "Library", "LaunchAgents"),
+): { removed: boolean; path: string } {
+  const legacyPath = join(plistDir, `${LEGACY_LABEL}.plist`);
+  if (!existsSync(legacyPath)) return { removed: false, path: legacyPath };
+  // Capture launchctl's status: if the legacy daemon is currently loaded and
+  // unload fails, we still unlink the plist below — but the daemon stays
+  // running and would race :8420 with the new one. Surface that so an
+  // operator can `launchctl bootout` it manually before kickstarting the
+  // new label. We don't throw because the more common case is "plist exists
+  // but isn't loaded," where launchctl exits non-zero harmlessly.
+  const unload = spawnSync("launchctl", ["unload", legacyPath], { stdio: "ignore" });
+  if (unload.status !== 0) {
+    log.warn("launchctl unload of legacy plist returned non-zero", {
+      path: legacyPath,
+      status: unload.status,
+    });
+    console.log(
+      `Note: launchctl unload ${legacyPath} returned ${unload.status} — if the legacy daemon is still running, stop it manually before kickstarting io.keepur.beekeeperd.`,
+    );
+  }
+  try {
+    unlinkSync(legacyPath);
+    log.info("Legacy plist removed", { path: legacyPath, legacyLabel: LEGACY_LABEL });
+    console.log(`Removed legacy LaunchAgent: ${legacyPath}`);
+    return { removed: true, path: legacyPath };
+  } catch (err) {
+    log.warn("Failed to remove legacy plist", { error: err instanceof Error ? err.message : String(err) });
+    return { removed: false, path: legacyPath };
+  }
+}
+
 export function install(configDir?: string): void {
   const nodePath = process.execPath;
   const indexPath = resolveIndexPath();
   const workDir = configDir ?? join(homedir(), ".beekeeper");
   const logDir = join(workDir, "logs");
   mkdirSync(logDir, { recursive: true });
+
+  // Migrate away from the pre-1.2 `io.keepur.beekeeper` label before writing
+  // the new plist — running both at once would EADDRINUSE on :8420.
+  removeLegacyPlist();
 
   const seed = seedConfigIfMissing(workDir);
   if (seed.created) {
@@ -283,16 +335,22 @@ export function install(configDir?: string): void {
 }
 
 export function uninstall(): void {
-  const plistPath = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+  const plistDir = join(homedir(), "Library", "LaunchAgents");
+  const plistPath = join(plistDir, `${LABEL}.plist`);
+  const legacyPath = join(plistDir, `${LEGACY_LABEL}.plist`);
 
-  // spawnSync with an array avoids shell interpretation entirely.
-  spawnSync("launchctl", ["unload", plistPath], { stdio: "ignore" });
-
-  if (existsSync(plistPath)) {
-    unlinkSync(plistPath);
-    log.info("Plist removed", { path: plistPath });
-    console.log(`LaunchAgent removed: ${plistPath}`);
-  } else {
+  let removedAny = false;
+  for (const path of [plistPath, legacyPath]) {
+    // spawnSync with an array avoids shell interpretation entirely.
+    spawnSync("launchctl", ["unload", path], { stdio: "ignore" });
+    if (existsSync(path)) {
+      unlinkSync(path);
+      log.info("Plist removed", { path });
+      console.log(`LaunchAgent removed: ${path}`);
+      removedAny = true;
+    }
+  }
+  if (!removedAny) {
     console.log("No LaunchAgent found to remove.");
   }
 

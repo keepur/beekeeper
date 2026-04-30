@@ -1,8 +1,68 @@
 #!/usr/bin/env node
 import "dotenv/config";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const command = process.argv[2];
+
+function printHelp(): void {
+  console.log(`beekeeper — operator CLI for the Beekeeper gateway
+
+USAGE
+  beekeeper <command> [args]
+
+SERVICE
+  install [<configDir>]      Install the LaunchAgent (~/.beekeeper by default)
+  uninstall                  Remove the LaunchAgent
+  serve                      Run the gateway in the foreground (dev only)
+
+INTROSPECTION (queries the running daemon)
+  status                     Gateway health (no admin secret needed)
+  sessions list              List active Claude Code sessions
+  devices list               List registered devices
+  capabilities               List sibling capabilities (Hive, etc.)
+
+USERS & DEVICES
+  user list                  List registered users
+  user add <id> <display>    Add a user
+  user rm <id>               Deactivate a user
+  pair <user> [label]        Issue a pairing code for a device
+
+INSTANCES
+  frame <subcommand>         Manage instance frames (apply / render / etc.)
+  init-state <instance>      Detect a Hive instance's init state
+
+PIPELINE
+  pipeline-tick <scope>      Run a Linear pipeline tick
+
+OTHER
+  help                       Show this help
+  version                    Show the installed version
+
+The gateway runs as a macOS LaunchAgent (io.keepur.beekeeperd). It is started
+by launchd, not by this CLI. To run it in the foreground for development, use
+\`beekeeper serve\`.
+
+Introspection commands accept --json to emit raw response bodies.`);
+}
+
+function printVersion(): void {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const pkgPath = resolve(here, "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+  console.log(pkg.version ?? "unknown");
+}
+
+if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+  printHelp();
+  process.exit(0);
+}
+
+if (command === "version" || command === "--version" || command === "-v") {
+  printVersion();
+  process.exit(0);
+}
 
 switch (command) {
   case "install": {
@@ -171,7 +231,87 @@ switch (command) {
     if (result.exitCode) process.exit(result.exitCode);
     break;
   }
-  default:
-    // No command — start the server
+  case "serve": {
+    // Foreground daemon — for dev only. launchd uses dist/index.js directly.
     await import("./index.js");
+    break;
+  }
+  case "status": {
+    let exit = 0;
+    try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
+      const { runStatus } = await import("./cli/admin-commands.js");
+      exit = await runStatus(process.argv.slice(3), loadAdminContext());
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "sessions": {
+    const sub = process.argv[3];
+    if (sub !== "list") {
+      console.error("Usage: beekeeper sessions list [--json]");
+      process.exit(1);
+    }
+    let exit = 0;
+    try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
+      const { runSessionsList } = await import("./cli/admin-commands.js");
+      exit = await runSessionsList(process.argv.slice(4), loadAdminContext());
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "devices": {
+    const sub = process.argv[3];
+    if (sub !== "list") {
+      console.error("Usage: beekeeper devices list [--json]");
+      process.exit(1);
+    }
+    let exit = 0;
+    try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
+      const { runDevicesList } = await import("./cli/admin-commands.js");
+      exit = await runDevicesList(process.argv.slice(4), loadAdminContext());
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  case "capabilities": {
+    let exit = 0;
+    try {
+      const { loadAdminContext } = await import("./cli/admin-client.js");
+      const { runCapabilitiesList } = await import("./cli/admin-commands.js");
+      exit = await runCapabilitiesList(process.argv.slice(3), loadAdminContext());
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : String(err));
+      exit = 1;
+    }
+    if (exit) process.exit(exit);
+    break;
+  }
+  default: {
+    // Unknown command: send the entire error block (heading + blank +
+    // help) to stderr so a script doing `beekeeper foo 2>/dev/null` gets
+    // nothing on stdout. printHelp() defaults to stdout (the regular
+    // `beekeeper help` flow), so we override the channel here.
+    const original = console.log;
+    console.log = console.error;
+    try {
+      console.error(`Unknown command: ${command}`);
+      console.error("");
+      printHelp();
+    } finally {
+      console.log = original;
+    }
+    process.exit(1);
+  }
 }
