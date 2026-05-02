@@ -4,6 +4,7 @@
   "description": "Claude Code session gateway — real development from your phone",
   "type": "module",
   "license": "Apache-2.0",
+  "homepage": "https://www.keepur.io",
   "bin": {
     "beekeeper": "dist/cli.js",
     "beekeeperd": "dist/index.js"
